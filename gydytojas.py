@@ -213,7 +213,10 @@ def search(params):
         # timezones are for loosers
         if '+' in t:
             t = t.split('+')[0]
-        return dateparser.parse(t)
+        try:
+            return dateparser.parse(t)
+        except OverflowError:
+            return dateparser.parse('2100-01-01')
 
     start_time = max(datetime.datetime.now(), FROM).replace(hour=0, minute=0, second=0, microsecond=0)
     since_time = start_time
