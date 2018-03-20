@@ -3,43 +3,17 @@
 
 from __future__ import unicode_literals
 
-import datetime
-import json
 from HTMLParser import HTMLParser
+import argparse
+import datetime
 import difflib
+import getpass
+import json
 
 from bs4 import BeautifulSoup
 from tabulate import tabulate
 import dateparser
 import requests
-
-# --- DO YOUR CHANGES HERE ---
-
-# Login information
-USERNAME = '1100101'
-PASSWORD = 'secret'
-
-# Date range of visits to check
-FROM = dateparser.parse('2018-01-22 16:20')
-UNTIL = dateparser.parse('2018-01-26 19:00')
-
-# Names of clinics, doctors etc don't have to be spelled exactly right, the
-# script is pretty good at guessing what you meant.
-
-# Your city
-REGION = 'Krakow'
-
-# list of specializations, must not be empty
-SPECIALIZATION = ['Medicover express -- przeziebinie', 'Medycyna rodzinna dorośli', 'Internista']
-
-# list or empty for any
-CLINIC = ['Bora Komorowskiego', 'Podgorska']
-DOCTOR = []
-
-# Change to true to automatically book the first available visit
-AUTOBOOK = False
-
-# ----------------------------
 
 
 class Visit(object):
@@ -192,7 +166,7 @@ def setup_params(region, specialization, clinic=None, doctor=None):
     return params
 
 
-def search(params):
+def search(start_time, end_time, params):
     payload = {
         "regionId": -1,
         "bookingTypeId": 2,
@@ -218,7 +192,7 @@ def search(params):
         except OverflowError:
             return dateparser.parse('2100-01-01')
 
-    start_time = max(datetime.datetime.now(), FROM).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_time = max(datetime.datetime.now(), start_time).replace(hour=0, minute=0, second=0, microsecond=0)
     since_time = start_time
 
     DELTA = datetime.timedelta(days=1)
@@ -265,8 +239,8 @@ def search(params):
             print 'Passed last possible appointment date %s.' % last_possible
             break
 
-        if since_time > UNTIL:
-            print 'Passed desired max time: %s' % UNTIL
+        if since_time > end_time:
+            print 'Passed desired max time: %s' % end_time
             break
 
         if collected_count == 0:
@@ -285,25 +259,77 @@ def autobook(visit):
     resp = post('https://mol.medicover.pl/MyVisits/Process/Confirm', data=extract_form_data(form))
 
 
-def main():
-    login(USERNAME, PASSWORD)
+def parse_time(v):
+    ret = dateparser.parse(v)
+    if ret is None:
+        raise ValueError
+    return ret.replace(second=0, microsecond=0)
 
-    if datetime.datetime.now() > UNTIL:
+
+def main():
+    parser = argparse.ArgumentParser(description='Check Medicover visit availability')
+
+    parser.add_argument('--region', '-r',
+                        default='Kraków',
+                        help='Region')
+
+    parser.add_argument('--username', '--user', '-u',
+                        help='user name used for login')
+
+    parser.add_argument('--password', '--pass', '-p',
+                        help='password used for login')
+
+    parser.add_argument('specialization',
+                        nargs='+',
+                        help='desired specialization, multiple can be given')
+
+    parser.add_argument('--doctor', '--doc', '-d',
+                        action='append',
+                        help='desired doctor, multiple can be given')
+
+    parser.add_argument('--clinic', '-c',
+                        action='append',
+                        help='desired clinic, multiple can be given')
+
+    parser.add_argument('--start', '--from', '-f',
+                        default='now',
+                        type=parse_time,
+                        help='search period start time.')
+
+    parser.add_argument('--end', '--until', '--till', '--to', '-t',
+                        default='in one year',
+                        type=parse_time,
+                        help='search period end time')
+
+    parser.add_argument('--autobook', '--auto', '-a',
+                        action='store_true',
+                        help='automatically book the first available visit')
+
+    args = parser.parse_args()
+
+    username = args.username or raw_input('user: ')
+    password = args.password or getpass.getpass('pass: ')
+
+    print 'Searching for visits between %s and %s.' % (args.start, args.end)
+
+    if datetime.datetime.now() > args.end:
         raise SystemExit("It's already too late")
 
-    doctors = DOCTOR or [None]
-    clinics = CLINIC or [None]
+    login(username, password)
+
+    doctors = args.doctor or [None]
+    clinics = args.clinic or [None]
 
     visits = set()
-    for specialization in SPECIALIZATION:
+    for specialization in args.specialization:
         for clinic in clinics:
             for doctor in doctors:
-                print 'Processing %s / %s / %s / %s' % (REGION, specialization, clinic or '<any clinic>', doctor or '<any doctor>')
-                params = setup_params(REGION, specialization, clinic, doctor)
-                visits |= set(search(params))
+                print 'Processing %s / %s / %s / %s' % (args.region, specialization, clinic or '<any clinic>', doctor or '<any doctor>')
+                params = setup_params(args.region, specialization, clinic, doctor)
+                visits |= set(search(args.start, args.end, params))
 
-    # we might have found visits outside the interresting time range
-    visits = sorted(set(v for v in visits if FROM <= v.date <= UNTIL))
+    # we might have found visits outside the interesting time range
+    visits = sorted(set(v for v in visits if args.start <= v.date <= args.end))
 
     if not visits:
         print 'No visits found'
@@ -314,7 +340,7 @@ def main():
         ((v.date, v.clinic, v.spec, v.doctor) for v in visits),
         headers='date clinic specialization doctor'.split())
 
-    if not AUTOBOOK:
+    if not args.autobook:
         return
 
     visit = visits[0]
