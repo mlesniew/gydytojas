@@ -333,15 +333,17 @@ def main():
 
     if not visits:
         print 'No visits found'
-        return
-
-    print 'Got %i visits:' % len(visits)
-    print tabulate(
-        ((v.date, v.clinic, v.spec, v.doctor) for v in visits),
-        headers='date clinic specialization doctor'.split())
+    else:
+        print 'Got %i visits:' % len(visits)
+        print tabulate(
+            ((v.date, v.clinic, v.spec, v.doctor) for v in visits),
+            headers='date clinic specialization doctor'.split())
 
     if not args.autobook:
         return
+
+    if not visits:
+        raise SystemExit('No visits -- not booking')
 
     visit = visits[0]
     autobook(visit)
