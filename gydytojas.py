@@ -9,6 +9,7 @@ import datetime
 import difflib
 import getpass
 import json
+import time
 
 from bs4 import BeautifulSoup
 from tabulate import tabulate
@@ -305,6 +306,15 @@ def main():
                         action='store_true',
                         help='automatically book the first available visit')
 
+    parser.add_argument('--keep-going', '-k',
+                        action='store_true',
+                        help='retry until a visit is found or booked')
+
+    parser.add_argument('--interval', '-i',
+                        type=int,
+                        default=5,
+                        help='interval between retries in seconds')
+
     args = parser.parse_args()
 
     username = args.username or raw_input('user: ')
@@ -321,32 +331,45 @@ def main():
     clinics = args.clinic or [None]
 
     visits = set()
+    params = []
     for specialization in args.specialization:
         for clinic in clinics:
             for doctor in doctors:
                 print 'Processing %s / %s / %s / %s' % (args.region, specialization, clinic or '<any clinic>', doctor or '<any doctor>')
-                params = setup_params(args.region, specialization, clinic, doctor)
-                visits |= set(search(args.start, args.end, params))
+                params.append(setup_params(args.region, specialization, clinic, doctor))
 
-    # we might have found visits outside the interesting time range
-    visits = sorted(set(v for v in visits if args.start <= v.date <= args.end))
+    while True:
+        visits = set()
+        for p in params:
+            visits |= set(search(args.start, args.end, p))
 
-    if not visits:
-        print 'No visits found'
-    else:
-        print 'Got %i visits:' % len(visits)
-        print tabulate(
-            ((v.date, v.clinic, v.spec, v.doctor) for v in visits),
-            headers='date clinic specialization doctor'.split())
+        # we might have found visits outside the interesting time range
+        visits = sorted(set(v for v in visits if args.start <= v.date <= args.end))
 
-    if not args.autobook:
-        return
+        if not visits:
+            print 'No visits found.'
+        else:
+            print 'Got %i visits:' % len(visits)
+            print tabulate(
+                ((v.date, v.clinic, v.spec, v.doctor) for v in visits),
+                headers='date clinic specialization doctor'.split())
 
-    if not visits:
-        raise SystemExit('No visits -- not booking')
+        if not visits and args.keep_going:
+            # nothing found, but we'll retry
+            if args.interval:
+                time.sleep(args.interval)
+            print 'Retrying...'
+            continue
 
-    visit = visits[0]
-    autobook(visit)
+        if not args.autobook:
+            return
+
+        if not visits:
+            raise SystemExit('No visits -- not booking')
+
+        visit = visits[0]
+        autobook(visit)
+        break
 
 
 if __name__ == '__main__':
