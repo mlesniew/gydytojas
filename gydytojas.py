@@ -8,6 +8,7 @@ import argparse
 import datetime
 import difflib
 import getpass
+import itertools
 import json
 import time
 
@@ -17,30 +18,9 @@ import dateparser
 import requests
 
 
-class Visit(object):
+from collections import namedtuple
 
-    def __init__(self, date, spec, doctor, clinic, visit_id):
-        self.date = date
-        self.spec = spec
-        self.doctor = doctor
-        self.clinic = clinic
-        self.visit_id = visit_id
-
-    @property
-    def elements(self):
-        return self.date, self.spec, self.doctor, self.clinic
-
-    def __hash__(self):
-        return hash(self.elements)
-
-    def __eq__(self, other):
-        return self.elements == other.elements
-
-    def __lt__(self, other):
-        return self.elements < other.elements
-
-    def __str__(self):
-        return '%s -- %s -- %s -- %s' % (self.date, self.spec, self.doctor, self.clinic)
+Visit = namedtuple('Visit', 'date specialization doctor clinic visit_id')
 
 
 session = requests.session()
@@ -335,24 +315,27 @@ def main():
     for specialization in args.specialization:
         for clinic in clinics:
             for doctor in doctors:
-                print 'Processing %s / %s / %s / %s' % (args.region, specialization, clinic or '<any clinic>', doctor or '<any doctor>')
+                print 'Processing %s / %s / %s / %s' % (args.region,
+                                                        specialization,
+                                                        clinic or '<any clinic>',
+                                                        doctor or '<any doctor>')
                 params.append(setup_params(args.region, specialization, clinic, doctor))
 
     while True:
-        visits = set()
-        for p in params:
-            visits |= set(search(args.start, args.end, p))
+        visits = itertools.chain.from_iterable(search(args.start, args.end, p) for p in params)
 
         # we might have found visits outside the interesting time range
-        visits = sorted(set(v for v in visits if args.start <= v.date <= args.end))
+        visits = [v for v in visits if args.start <= v.date <= args.end]
 
-        if not visits:
+        unique_visits = sorted(set(v[:4] for v in visits))
+
+        if not unique_visits:
             print 'No visits found.'
         else:
-            print 'Got %i visits:' % len(visits)
+            print 'Got %i visits:' % len(unique_visits)
             print tabulate(
-                ((v.date, v.clinic, v.spec, v.doctor) for v in visits),
-                headers='date clinic specialization doctor'.split())
+                unique_visits,
+                headers=Visit._fields[:4])
 
         if not visits and args.keep_going:
             # nothing found, but we'll retry
@@ -367,7 +350,7 @@ def main():
         if not visits:
             raise SystemExit('No visits -- not booking')
 
-        visit = visits[0]
+        visit = sorted(visits)[0]
         autobook(visit)
         break
 
