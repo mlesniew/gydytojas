@@ -11,31 +11,51 @@ import getpass
 import itertools
 import json
 import time
+import re
+import collections
 
 from bs4 import BeautifulSoup
 from tabulate import tabulate
-import dateparser
 import requests
 
 
-from collections import namedtuple
-
-Visit = namedtuple('Visit', 'date specialization doctor clinic visit_id')
+Visit = collections.namedtuple('Visit', 'date specialization doctor clinic visit_id')
 
 
 session = requests.session()
+session.headers['accept'] = 'application/json'
+session.hooks = {
+        'response': lambda r, *args, **kwargs: r.raise_for_status()
+        }
 
 
-def get(*args, **kwargs):
-    ret = session.get(*args, **kwargs)
-    ret.raise_for_status()
-    return ret
+def parse_datetime(t):
+    FORMATS = [
+        '%Y-%m-%dT%H:%M:%S',
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%dT%H:%M',
+        '%Y-%m-%d %H:%M',
+        '%Y-%m-%d',
+        '%Y.%m.%d %H:%M:%S',
+        '%Y.%m.%d %H:%M',
+        '%Y-%m-%d',
+    ]
+    t = str(t).strip()
+
+    # drop timezone
+    t = re.sub(r'[+-][0-9]{2}:?[0-9]{2}$', '', t).strip()
+
+    for time_format in FORMATS:
+        try:
+            return datetime.datetime.strptime(t, time_format)
+        except ValueError:
+            continue
+
+    raise ValueError
 
 
-def post(*args, **kwargs):
-    ret = session.post(*args, **kwargs)
-    ret.raise_for_status()
-    return ret
+def format_datetime(t):
+    return t.strftime('%Y-%m-%dT%H:%M:%S')
 
 
 def Soup(response):
@@ -52,7 +72,7 @@ def unescape(text):
 
 
 def login(username, password):
-    resp = get('https://mol.medicover.pl/Users/Account/LogOn')
+    resp = session.get('https://mol.medicover.pl/Users/Account/LogOn')
 
     # remember URL to post to
     post_url = resp.url
@@ -69,13 +89,13 @@ def login(username, password):
 
     # This is where the magic happens
     resp = session.post(
-        post_url,
-        data={
-            'username': username,
-            'password': password,
-            af['name']: af['value'],
-        }
-    )
+            post_url,
+            data={
+                'username': username,
+                'password': password,
+                af['name']: af['value'],
+                }
+            )
 
     # After posting the login information and the retarded token, we should get
     # redirected to some other page with a hidden form.  Apparently in the browser
@@ -83,14 +103,12 @@ def login(username, password):
     # same.
     soup = Soup(resp)
     form = soup.form
-    if not form:
+    if not (('/connect/authorize' in resp.url) and form):
         raise SystemExit('Login failed')
-    resp = post(form['action'], data=extract_form_data(form))
+    resp = session.post(form['action'], data=extract_form_data(form))
 
     # If all went well, we should be logged in now.  Try to open the main page...
-    resp = get('https://mol.medicover.pl/')
-    with open('3.html', 'w') as f:
-        f.write(resp.text.encode('utf-8'))
+    resp = session.get('https://mol.medicover.pl/')
 
     if resp.url != 'https://mol.medicover.pl/':
         # We got redirected, probably the login failed and it sent us back to the
@@ -119,9 +137,8 @@ def setup_params(region, specialization, clinic=None, doctor=None):
     def update_params(element_name, json_name, expected_value):
         if expected_value is None:
             return
-        headers = {'accept': 'application/json'}
-        resp = get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/FormModel',
-                   params=params, headers=headers)
+        resp = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/FormModel',
+                           params=params)
         data = resp.json()
 
         if data[json_name]:
@@ -130,7 +147,7 @@ def setup_params(region, specialization, clinic=None, doctor=None):
             print "Can't select a %s for this search, skipping constraint." % element_name
 
     # Open the main visit search page to pretend we're a browser
-    get('https://mol.medicover.pl/MyVisits')
+    session.get('https://mol.medicover.pl/MyVisits')
 
     # Setup some params initially
     params = {
@@ -161,55 +178,41 @@ def search(start_time, end_time, params):
     }
     payload.update(params)
 
-    def ts(t):
-        return t.strftime('%Y-%m-%dT%H:%M:%S')
-
-    def pt(t):
-        # timezones are for loosers
-        if '+' in t:
-            t = t.split('+')[0]
-        try:
-            return dateparser.parse(t)
-        except OverflowError:
-            return dateparser.parse('2100-01-01')
-
     start_time = max(datetime.datetime.now(), start_time).replace(hour=0, minute=0, second=0, microsecond=0)
     since_time = start_time
 
     DELTA = datetime.timedelta(days=1)
 
     # Opening these addresses seems retarded, but it is needed, i guess it sets some cookies
-    get('https://mol.medicover.pl/MyVisits')
+    session.get('https://mol.medicover.pl/MyVisits')
     # wtf
-    get('https://mol.medicover.pl/MyVisits?bookingTypeId=2&mex=True&pfm=1')
+    session.get('https://mol.medicover.pl/MyVisits?bookingTypeId=2&mex=True&pfm=1')
 
     print 'Searching for visits...'
     while True:
         print '  ...%s' % since_time
-        payload['searchSince'] = ts(start_time)
-        payload['searchForNextSince'] = ts(since_time) if since_time else None
+        payload['searchSince'] = format_datetime(start_time)
+        payload['searchForNextSince'] = format_datetime(since_time) if since_time else None
         params = {
             "language": "pl-PL"
         }
-        headers = {'content-type': 'application/json', 'accept': 'application/json'}
-        resp = post('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook',
-                    params=params,
-                    data=json.dumps(payload),
-                    headers=headers)
+        resp = session.post('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook',
+                            params=params,
+                            json=payload)
         data = resp.json()
 
         collected_count = 0
         for visit in data['items']:
             collected_count += 1
             yield Visit(
-                dateparser.parse(visit['appointmentDate']),
+                parse_datetime(visit['appointmentDate']),
                 visit['specializationName'],
                 visit['doctorName'],
                 visit['clinicName'],
                 visit['id'])
 
-        first_possible = pt(data['firstPossibleAppointmentDate'])
-        last_possible = pt(data['lastPossibleAppointmentDate'])
+        first_possible = parse_datetime(data['firstPossibleAppointmentDate'])
+        last_possible = parse_datetime(data['lastPossibleAppointmentDate'])
 
         if (since_time < first_possible):
             since_time = first_possible
@@ -232,19 +235,12 @@ def search(start_time, end_time, params):
 def autobook(visit):
     print 'Autobooking %s' % visit
     params = {'id': visit.visit_id}
-    resp = get('https://mol.medicover.pl/MyVisits/Process/Process', params=params)
-    resp = get('https://mol.medicover.pl/MyVisits/Process/Confirm', params=params)
+    resp = session.get('https://mol.medicover.pl/MyVisits/Process/Process', params=params)
+    resp = session.get('https://mol.medicover.pl/MyVisits/Process/Confirm', params=params)
 
     soup = Soup(resp)
     form = soup.find('form', action="/MyVisits/Process/Confirm")
-    resp = post('https://mol.medicover.pl/MyVisits/Process/Confirm', data=extract_form_data(form))
-
-
-def parse_time(v):
-    ret = dateparser.parse(v)
-    if ret is None:
-        raise ValueError
-    return ret.replace(second=0, microsecond=0)
+    resp = session.post('https://mol.medicover.pl/MyVisits/Process/Confirm', data=extract_form_data(form))
 
 
 def main():
@@ -273,13 +269,13 @@ def main():
                         help='desired clinic, multiple can be given')
 
     parser.add_argument('--start', '--from', '-f',
-                        default='now',
-                        type=parse_time,
+                        default='2000-01-01',
+                        type=parse_datetime,
                         help='search period start time.')
 
     parser.add_argument('--end', '--until', '--till', '--to', '-t',
-                        default='in one year',
-                        type=parse_time,
+                        default='2100-01-01',
+                        type=parse_datetime,
                         help='search period end time')
 
     parser.add_argument('--autobook', '--auto', '-a',
@@ -300,10 +296,14 @@ def main():
     username = args.username or raw_input('user: ')
     password = args.password or getpass.getpass('pass: ')
 
-    print 'Searching for visits between %s and %s.' % (args.start, args.end)
+    now = datetime.datetime.now()
+    start = max(args.start, now)
+    end = args.end
 
-    if datetime.datetime.now() > args.end:
+    if now > end:
         raise SystemExit("It's already too late")
+
+    print 'Searching for visits between %s and %s.' % (start, end)
 
     login(username, password)
 
@@ -322,10 +322,10 @@ def main():
                 params.append(setup_params(args.region, specialization, clinic, doctor))
 
     while True:
-        visits = itertools.chain.from_iterable(search(args.start, args.end, p) for p in params)
+        visits = itertools.chain.from_iterable(search(start, end, p) for p in params)
 
         # we might have found visits outside the interesting time range
-        visits = [v for v in visits if args.start <= v.date <= args.end]
+        visits = [v for v in visits if start <= v.date <= end]
 
         unique_visits = sorted(set(v[:4] for v in visits))
 
