@@ -1,9 +1,14 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf8 -*-
 
 from __future__ import unicode_literals
+from __future__ import print_function
 
-from HTMLParser import HTMLParser
+try:
+    from HTMLParser import HTMLParser
+except ImportError:
+    from html.parser import HTMLParser
+
 import argparse
 import collections
 import datetime
@@ -117,7 +122,7 @@ def login(username, password):
         raise SystemExit('Login failed.')
 
     # we're in, lol
-    print 'Logged in.'
+    print('Logged in.')
 
 
 def setup_params(region, specialization, clinic=None, doctor=None):
@@ -126,13 +131,13 @@ def setup_params(region, specialization, clinic=None, doctor=None):
         matches = difflib.get_close_matches(name.lower(), list(mapping), 1, 0.1)
 
         if not matches:
-            print 'Error resolving %s to an id.  Available values are:' % name
+            print('Error resolving %s to an id.  Available values are:' % name)
             for name in sorted(mapping):
-                print ' * %s' % name
+                print(' * %s' % name)
             raise SystemExit("Can't resolve %s to an ID" % name)
 
         ret = mapping[matches[0]]
-        print 'Assuming "%s" is "%s" with id = %i' % (name, matches[0].title(), ret)
+        print('Assuming "%s" is "%s" with id = %i' % (name, matches[0].title(), ret))
         return ret
 
     def update_params(element_name, json_name, expected_value):
@@ -145,7 +150,7 @@ def setup_params(region, specialization, clinic=None, doctor=None):
         if data[json_name]:
             params[element_name] = find_id(data[json_name], expected_value)
         else:
-            print "Can't select a %s for this search, skipping constraint." % element_name
+            print("Can't select a %s for this search, skipping constraint." % element_name)
 
     # Open the main visit search page to pretend we're a browser
     session.get('https://mol.medicover.pl/MyVisits')
@@ -187,11 +192,11 @@ def search(start_time, end_time, params):
     # Opening these addresses seems retarded, but it is needed, i guess it sets some cookies
     session.get('https://mol.medicover.pl/MyVisits')
     # wtf
-    session.get('https://mol.medicover.pl/MyVisits?bookingTypeId=2&mex=True&pfm=1')
+    session.get('https://mol.medicover.pl/MyVisits', params={'bookingTypeId': 2, 'mex': True, 'pfm': 1})
 
-    print 'Searching for visits...'
+    print('Searching for visits...')
     while True:
-        print '  ...%s' % since_time
+        print('  ...%s' % since_time)
         payload['searchSince'] = format_datetime(start_time)
         payload['searchForNextSince'] = format_datetime(since_time) if since_time else None
         params = {
@@ -216,7 +221,7 @@ def search(start_time, end_time, params):
         last_possible = parse_datetime(data['lastPossibleAppointmentDate'])
 
         if last_possible.year < 2000:
-            print 'No visits available.'
+            print('No visits available.')
             break
 
         if (since_time < first_possible):
@@ -225,20 +230,20 @@ def search(start_time, end_time, params):
             since_time += DELTA
 
         if since_time > last_possible:
-            print 'Passed last possible appointment date %s.' % last_possible
+            print('Passed last possible appointment date %s.' % last_possible)
             break
 
         if since_time > end_time:
-            print 'Passed desired max time: %s' % end_time
+            print('Passed desired max time: %s' % end_time)
             break
 
         if collected_count == 0:
-            print 'No more visits (?)'
+            print('No more visits (?)')
             break
 
 
 def autobook(visit):
-    print 'Autobooking first visit...'
+    print('Autobooking first visit...')
     params = {'id': visit.visit_id}
     resp = session.get('https://mol.medicover.pl/MyVisits/Process/Process', params=params)
     resp = session.get('https://mol.medicover.pl/MyVisits/Process/Confirm', params=params)
@@ -310,7 +315,7 @@ def main():
     if now > end:
         raise SystemExit("It's already too late")
 
-    print 'Searching for visits between %s and %s.' % (start, end)
+    print('Searching for visits between %s and %s.' % (start, end))
 
     login(username, password)
 
@@ -322,10 +327,10 @@ def main():
     for specialization in args.specialization:
         for clinic in clinics:
             for doctor in doctors:
-                print 'Processing %s / %s / %s / %s' % (args.region,
+                print('Processing %s / %s / %s / %s' % (args.region,
                                                         specialization,
                                                         clinic or '<any clinic>',
-                                                        doctor or '<any doctor>')
+                                                        doctor or '<any doctor>'))
                 params.append(setup_params(args.region, specialization, clinic, doctor))
 
     while True:
@@ -337,12 +342,12 @@ def main():
         unique_visits = sorted(set(v[:4] for v in visits))
 
         if not unique_visits:
-            print 'No visits found.'
+            print('No visits found.')
         else:
-            print 'Got %i visits:' % len(unique_visits)
-            print tabulate(
+            print('Found %i visits.' % len(unique_visits))
+            print(tabulate(
                 unique_visits,
-                headers=Visit._fields[:4])
+                headers=Visit._fields[:4]))
 
         if not visits and args.keep_going:
             # nothing found, but we'll retry
@@ -351,9 +356,9 @@ def main():
                     sleep_time = args.interval
                 else:
                     sleep_time = -1 * args.interval * random.random()
-                print 'Sleeping %.2f seconds' % sleep_time
+                print('Sleeping %.1f seconds' % sleep_time)
                 time.sleep(sleep_time)
-            print 'Retrying...'
+            print('Retrying...')
             continue
 
         if not args.autobook:
