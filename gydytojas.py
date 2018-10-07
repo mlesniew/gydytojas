@@ -214,6 +214,10 @@ def search(start_time, end_time, params):
         first_possible = parse_datetime(data['firstPossibleAppointmentDate'])
         last_possible = parse_datetime(data['lastPossibleAppointmentDate'])
 
+        if last_possible.year < 2000:
+            print 'No visits available.'
+            break
+
         if (since_time < first_possible):
             since_time = first_possible
         else:
