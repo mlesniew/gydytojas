@@ -238,7 +238,7 @@ def search(start_time, end_time, params):
 
 
 def autobook(visit):
-    print 'Autobooking %s' % visit
+    print 'Autobooking first visit...'
     params = {'id': visit.visit_id}
     resp = session.get('https://mol.medicover.pl/MyVisits/Process/Process', params=params)
     resp = session.get('https://mol.medicover.pl/MyVisits/Process/Confirm', params=params)
