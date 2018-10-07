@@ -5,14 +5,15 @@ from __future__ import unicode_literals
 
 from HTMLParser import HTMLParser
 import argparse
+import collections
 import datetime
 import difflib
 import getpass
 import itertools
 import json
-import time
+import random
 import re
-import collections
+import time
 
 from bs4 import BeautifulSoup
 from tabulate import tabulate
@@ -293,7 +294,9 @@ def main():
     parser.add_argument('--interval', '-i',
                         type=int,
                         default=5,
-                        help='interval between retries in seconds')
+                        help='interval between retries in seconds, '
+                             'use negative values to sleep random time up to '
+                             'the given amount of seconds')
 
     args = parser.parse_args()
 
@@ -344,7 +347,12 @@ def main():
         if not visits and args.keep_going:
             # nothing found, but we'll retry
             if args.interval:
-                time.sleep(args.interval)
+                if args.interval > 0:
+                    sleep_time = args.interval
+                else:
+                    sleep_time = -1 * args.interval * random.random()
+                print 'Sleeping %.2f seconds' % sleep_time
+                time.sleep(sleep_time)
             print 'Retrying...'
             continue
 
