@@ -30,6 +30,7 @@ Visit = collections.namedtuple('Visit', 'date specialization doctor clinic visit
 
 session = requests.session()
 session.headers['accept'] = 'application/json'
+session.headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/69.0.3497.81 Chrome/69.0.3497.81 Safari/537.36'
 session.hooks = {
         'response': lambda r, *args, **kwargs: r.raise_for_status()
         }
@@ -191,8 +192,6 @@ def search(start_time, end_time, params):
 
     # Opening these addresses seems retarded, but it is needed, i guess it sets some cookies
     session.get('https://mol.medicover.pl/MyVisits')
-    # wtf
-    session.get('https://mol.medicover.pl/MyVisits', params={'bookingTypeId': 2, 'mex': True, 'pfm': 1})
 
     print('Searching for visits...')
     while True:
