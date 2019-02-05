@@ -36,16 +36,19 @@ session.hooks = {
         }
 
 
-def parse_datetime(t):
+def parse_datetime(t, maximize=False):
     FORMATS = [
         '%Y-%m-%dT%H:%M:%S',
         '%Y-%m-%d %H:%M:%S',
+        '%Y.%m.%d %H:%M:%S',
         '%Y-%m-%dT%H:%M',
         '%Y-%m-%d %H:%M',
-        '%Y-%m-%d',
-        '%Y.%m.%d %H:%M:%S',
         '%Y.%m.%d %H:%M',
+        '%Y-%m-%dT%H',
+        '%Y-%m-%d %H',
+        '%Y.%m.%d %H',
         '%Y-%m-%d',
+        '%Y.%m.%d',
     ]
     t = str(t).strip()
 
@@ -54,9 +57,19 @@ def parse_datetime(t):
 
     for time_format in FORMATS:
         try:
-            return datetime.datetime.strptime(t, time_format)
+            ret = datetime.datetime.strptime(t, time_format)
         except ValueError:
             continue
+        else:
+            if maximize:
+                ret = ret.replace(second=59, microsecond=999999)
+            else:
+                ret = ret.replace(second=0, microsecond=0)
+            if '%M' not in time_format and maximize:
+                ret = ret.replace(minute=59)
+            if '%H' not in time_format and maximize:
+                ret = ret.replace(hour=23)
+            return ret
 
     raise ValueError
 
@@ -280,11 +293,13 @@ def main():
     parser.add_argument('--start', '--from', '-f',
                         default='2000-01-01',
                         type=parse_datetime,
+                        metavar='start time',
                         help='search period start time.')
 
     parser.add_argument('--end', '--until', '--till', '--to', '-t',
                         default='2100-01-01',
-                        type=parse_datetime,
+                        type=lambda t: parse_datetime(t, True),
+                        metavar='end time',
                         help='search period end time')
 
     parser.add_argument('--autobook', '--auto', '-a',
