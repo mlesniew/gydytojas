@@ -78,6 +78,23 @@ def format_datetime(t):
     return t.strftime('%Y-%m-%dT%H:%M:%S')
 
 
+def parse_timedelta(t):
+    p = re.compile(r'((?P<days>\d+?)(d))?\s*((?P<hours>\d+?)(hr|h))?\s*((?P<minutes>\d+?)(m))?$')
+    m = p.match(t)
+    if not m:
+        raise ValueError
+    days = m.group('days')
+    hours = m.group('hours')
+    minutes = m.group('minutes')
+    if not (days or hours or minutes):
+        raise ValueError
+    days = int(days or '0')
+    hours = int(hours or '0')
+    minutes = int(minutes or '0')
+
+    return datetime.timedelta(days=days, hours=hours, minutes=minutes)
+
+
 def Soup(response):
     return BeautifulSoup(response.content, 'lxml')
 
@@ -302,6 +319,12 @@ def main():
                         metavar='end time',
                         help='search period end time')
 
+    parser.add_argument('--margin', '-m',
+                        default='1h',
+                        type=parse_timedelta,
+                        metavar='margin',
+                        help='minimum time from now till the visit')
+
     parser.add_argument('--autobook', '--auto', '-a',
                         action='store_true',
                         help='automatically book the first available visit')
@@ -322,15 +345,6 @@ def main():
     username = args.username or raw_input('user: ')
     password = args.password or getpass.getpass('pass: ')
 
-    now = datetime.datetime.now()
-    start = max(args.start, now)
-    end = args.end
-
-    if now > end:
-        raise SystemExit("It's already too late")
-
-    print('Searching for visits between %s and %s.' % (start, end))
-
     login(username, password)
 
     doctors = args.doctor or [None]
@@ -348,6 +362,14 @@ def main():
                 params.append(setup_params(args.region, specialization, clinic, doctor))
 
     while True:
+        start = max(args.start, datetime.datetime.now() + args.margin)
+        end = args.end
+
+        if start >= end:
+            raise SystemExit("It's already too late.")
+
+        print('Searching for visits between %s and %s.' % (start, end))
+
         visits = itertools.chain.from_iterable(search(start, end, p) for p in params)
 
         # we might have found visits outside the interesting time range
