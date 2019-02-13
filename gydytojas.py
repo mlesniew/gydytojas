@@ -170,6 +170,9 @@ def login(username, password):
 def setup_params(region, specialization, clinic=None, doctor=None):
 
     def update_params(element_name, json_name, expected_value):
+        if expected_value is None:
+            return
+
         with Spinner('Translating "%s" to an id...' % expected_value) as spinner:
 
             def find_id(table, name):
@@ -186,8 +189,6 @@ def setup_params(region, specialization, clinic=None, doctor=None):
                 spinner.succeed('Resolved "%s" to "%s" (id = %i)' % (name, matches[0].title(), ret))
                 return ret
 
-            if expected_value is None:
-                return
             resp = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/FormModel',
                                params=params)
             data = resp.json()
