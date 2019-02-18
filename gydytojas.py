@@ -370,8 +370,14 @@ def main():
             for doctor in doctors:
                 params.append(setup_params(args.region, specialization, clinic, doctor))
 
-    while True:
-        with Spinner('Searching for visits...') as spinner:
+    with Spinner('Searching for visits...') as spinner:
+        attempt = 0
+        while True:
+            attempt += 1
+
+            if args.keep_going:
+                spinner.text = 'Searching for visits (attempt %i)' % attempt
+
             start = max(args.start, datetime.datetime.now() + args.margin)
             end = args.end
 
@@ -385,6 +391,17 @@ def main():
 
             unique_visits = sorted(set(v[:4] for v in visits))
 
+            if not unique_visits and args.keep_going:
+                # nothing found, but we'll retry
+                if args.interval:
+                    if args.interval > 0:
+                        sleep_time = args.interval
+                    else:
+                        sleep_time = -1 * args.interval * random.random()
+                    spinner.text = 'No visits found on %i attempt, waiting %.1f seconds' % (attempt, sleep_time)
+                    time.sleep(sleep_time)
+                continue
+
             if not unique_visits:
                 spinner.fail('No visits found')
             else:
@@ -393,26 +410,15 @@ def main():
                     unique_visits,
                     headers=Visit._fields[:4]))
 
-        if not visits and args.keep_going:
-            # nothing found, but we'll retry
-            if args.interval:
-                if args.interval > 0:
-                    sleep_time = args.interval
-                else:
-                    sleep_time = -1 * args.interval * random.random()
-                with Spinner('Waiting %.1f seconds' % sleep_time):
-                    time.sleep(sleep_time)
-            continue
+            if not args.autobook:
+                return
 
-        if not args.autobook:
-            return
+            if not visits:
+                raise SystemExit('No visits -- not booking')
 
-        if not visits:
-            raise SystemExit('No visits -- not booking')
-
-        visit = sorted(visits)[0]
-        autobook(visit)
-        break
+            visit = sorted(visits)[0]
+            autobook(visit)
+            break
 
 
 if __name__ == '__main__':
