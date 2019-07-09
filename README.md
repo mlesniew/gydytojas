@@ -40,7 +40,8 @@ gydytojas.py --username 888888 --password secret --end 2019-01-12 --keep-going -
 usage: gydytojas.py [-h] [--region REGION] [--username USERNAME]
                     [--password PASSWORD] [--doctor DOCTOR] [--clinic CLINIC]
                     [--start start time] [--end end time] [--margin margin]
-                    [--autobook] [--keep-going] [--interval INTERVAL]
+                    [--autobook] [--keep-going] [--diagnostic-procedure]
+                    [--interval INTERVAL]
                     specialization [specialization ...]
 
 Check Medicover visit availability
@@ -69,6 +70,9 @@ optional arguments:
   --autobook, --auto, -a
                         automatically book the first available visit
   --keep-going, -k      retry until a visit is found or booked
+  --diagnostic-procedure
+                        search for diagnostic procedures instead of
+                        consultations
   --interval INTERVAL, -i INTERVAL
                         interval between retries in seconds, use negative
                         values to sleep random time up to the given amount of

@@ -26,6 +26,10 @@ import requests
 from halo import Halo
 
 
+DIAGNOSTIC_PROCEDURE = 1
+CONSULTATION = 2
+
+
 Visit = collections.namedtuple('Visit', 'date specialization doctor clinic visit_id')
 
 
@@ -167,7 +171,7 @@ def login(username, password):
         # we're in, lol
 
 
-def setup_params(region, specialization, clinic=None, doctor=None):
+def setup_params(region, visit_type, specialization, clinic=None, doctor=None):
 
     def update_params(element_name, json_name, expected_value):
         if expected_value is None:
@@ -204,12 +208,20 @@ def setup_params(region, specialization, clinic=None, doctor=None):
     # Setup some params initially
     params = {
         'regionId': -1,
-        'bookingTypeId': 2,
-        'specializationId': -2
+        'bookingTypeId': visit_type,
     }
 
+    if visit_type == CONSULTATION:
+        params['specializationId'] = -2
+
+
     update_params('regionId', 'availableRegions', region)
-    update_params('specializationId', 'availableSpecializations', specialization)
+
+    if visit_type == CONSULTATION:
+        update_params('specializationId', 'availableSpecializations', specialization)
+    elif visit_type == DIAGNOSTIC_PROCEDURE:
+        update_params('serviceId', 'availableDiagnosticProcedures', specialization)
+
     update_params('clinicId', 'availableClinics', clinic)
     update_params('doctorId', 'availableDoctors', doctor)
 
@@ -219,7 +231,6 @@ def setup_params(region, specialization, clinic=None, doctor=None):
 def search(start_time, end_time, params):
     payload = {
         "regionId": -1,
-        "bookingTypeId": 2,
         "specializationId": None,
         "clinicId": -1,
         "languageId": -1,
@@ -346,6 +357,10 @@ def main():
                         action='store_true',
                         help='retry until a visit is found or booked')
 
+    parser.add_argument('--diagnostic-procedure',
+                        action='store_true',
+                        help='search for diagnostic procedures instead of consultations')
+
     parser.add_argument('--interval', '-i',
                         type=int,
                         default=5,
@@ -360,6 +375,7 @@ def main():
 
     login(username, password)
 
+    visit_type = DIAGNOSTIC_PROCEDURE if args.diagnostic_procedure else CONSULTATION
     doctors = args.doctor or [None]
     clinics = args.clinic or [None]
 
@@ -368,7 +384,7 @@ def main():
     for specialization in args.specialization:
         for clinic in clinics:
             for doctor in doctors:
-                params.append(setup_params(args.region, specialization, clinic, doctor))
+                params.append(setup_params(args.region, visit_type, specialization, clinic, doctor))
 
     with Spinner('Searching for visits...') as spinner:
         attempt = 0
