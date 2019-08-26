@@ -4,16 +4,12 @@
 from __future__ import unicode_literals
 from __future__ import print_function
 
-try:
-    from HTMLParser import HTMLParser
-except ImportError:
-    from html.parser import HTMLParser
-
 import argparse
 import collections
 import datetime
 import difflib
 import getpass
+import html
 import itertools
 import json
 import random
@@ -115,10 +111,6 @@ def extract_form_data(form):
     return {field.get('name'): field.get('value') for field in fields}
 
 
-def unescape(text):
-    return HTMLParser().unescape(text)
-
-
 def login(username, password):
     with Spinner('Login'):
         resp = session.get('https://mol.medicover.pl/Users/Account/LogOn')
@@ -133,7 +125,7 @@ def login(username, password):
         # information.  The token is a JSON object in a special html element somewhere
         # deep in the page.  The JSON data has some chars escaped to not break the html.
         mj_element = soup.find(id='modelJson')
-        mj = json.loads(unescape(mj_element.text))
+        mj = json.loads(html.unescape(mj_element.text))
         af = mj['antiForgery']
 
         # This is where the magic happens
