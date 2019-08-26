@@ -26,10 +26,6 @@ import requests
 from halo import Halo
 
 
-DIAGNOSTIC_PROCEDURE = 1
-CONSULTATION = 2
-
-
 Visit = collections.namedtuple('Visit', 'date specialization doctor clinic visit_id')
 
 
@@ -171,87 +167,67 @@ def login(username, password):
         # we're in, lol
 
 
-def setup_params(region, visit_type, specialization, clinic=None, doctor=None):
+def setup_params(region, service_type, specialization, clinics=None, doctor=None):
+    with Spinner('Setup search parameters (%s / %s / %s / %s / %s)' % (
+        region, service_type, specialization, clinics, doctor)):
 
-    def update_params(element_name, json_name, expected_value):
-        if expected_value is None:
-            return
+        params = {}
 
-        with Spinner('Translating "%s" to an id...' % expected_value) as spinner:
+        # Open the main visit search page to pretend we're a browser
+        session.get('https://mol.medicover.pl/MyVisits')
 
-            def find_id(table, name):
-                mapping = {e['text'].lower(): e['id'] for e in table if e.get('id') >= 0}
-                matches = difflib.get_close_matches(name.lower(), list(mapping), 1, 0.1)
+        resp = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetInitialFiltersData')
+        data = resp.json()
 
-                if not matches:
-                    spinner.fail('Error resolving "%s" to an id.  Possible values:')
-                    for name in sorted(mapping):
-                        spinner.info(' * ' + name)
-                    raise SystemExit("Can't resolve %s to an ID" % name)
+        def match_param(data, key, text):
+            mapping = {e['text'].lower(): e['id'] for e in data.get(key, [])}
+            matches = difflib.get_close_matches(text.lower(), list(mapping), 1, 0.1)
+            if not matches:
+                raise SystemExit('Error translating %s "%s" to an id.' % (key, text))
+            return mapping[matches[0]]
 
-                ret = mapping[matches[0]]
-                spinner.succeed('Resolved "%s" to "%s" (id = %i)' % (name, matches[0].title(), ret))
-                return ret
+        # regions, serviceTypes from initial params
+        params['regionIds'] = [match_param(data, 'regions', region)]
+        params['serviceTypeId'] = str(match_param(data, 'serviceTypes', service_type))
 
-            resp = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/FormModel',
-                               params=params)
-            data = resp.json()
+        # serviceId / specialization
+        data = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData',
+                           params=params).json()
+        params['serviceIds'] = [str(match_param(data, 'services', specialization))]
 
-            if data[json_name]:
-                params[element_name] = find_id(data[json_name], expected_value)
-            else:
-                spinner.warn("Can't select a %s for this search, skipping constraint." % element_name)
+        # clinics
+        if clinics:
+            data = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData',
+                               params=params).json()
+            params['clinicIds'] = [match_param(data, 'clinics', clinic) for clinic in clinics]
 
-    # Open the main visit search page to pretend we're a browser
-    session.get('https://mol.medicover.pl/MyVisits')
+        if doctor:
+            data = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData',
+                               params=params).json()
+            # for some reason this must be a string, not an int in the posted json
+            params['doctorIds'] = [str(match_param(data, 'doctors', doctor))]
 
-    # Setup some params initially
-    params = {
-        'regionId': -1,
-        'bookingTypeId': visit_type,
-    }
-
-    if visit_type == CONSULTATION:
-        params['specializationId'] = -2
-
-
-    update_params('regionId', 'availableRegions', region)
-
-    if visit_type == CONSULTATION:
-        update_params('specializationId', 'availableSpecializations', specialization)
-    elif visit_type == DIAGNOSTIC_PROCEDURE:
-        update_params('serviceId', 'availableDiagnosticProcedures', specialization)
-
-    update_params('clinicId', 'availableClinics', clinic)
-    update_params('doctorId', 'availableDoctors', doctor)
-
-    return params
+        return params
 
 
 def search(start_time, end_time, params):
     payload = {
-        "regionId": -1,
-        "specializationId": None,
-        "clinicId": -1,
-        "languageId": -1,
-        "doctorId": None,
-        "periodOfTheDay": 0,
-        "isSetBecauseOfPcc": False,
-        "isSetBecausePromoteSpecialization": False
-    }
+            "regionIds": [],
+            "serviceTypeId": "1",
+            "serviceIds": [],
+            "clinicIds": [],
+            "doctorLanguagesIds":[],
+            "doctorIds":[],
+            "searchSince":None
+            }
     payload.update(params)
 
-    start_time = max(datetime.datetime.now(), start_time).replace(hour=0, minute=0, second=0, microsecond=0)
-    since_time = start_time
-
-    DELTA = datetime.timedelta(days=1)
-
-    # Opening these addresses seems retarded, but it is needed, i guess it sets some cookies
-    session.get('https://mol.medicover.pl/MyVisits')
+    since_time = max(datetime.datetime.now(), start_time)
+    ONE_DAY = datetime.timedelta(days=1)
 
     while True:
-        payload['searchSince'] = format_datetime(start_time)
-        payload['searchForNextSince'] = format_datetime(since_time) if since_time else None
+        payload['searchSince'] = format_datetime(since_time)
+        max_appointment_date = None
         params = {
             "language": "pl-PL"
         }
@@ -260,38 +236,25 @@ def search(start_time, end_time, params):
                             json=payload)
         data = resp.json()
 
-        collected_count = 0
+        if not data['items']:
+            # no more visits
+            break
+
         for visit in data['items']:
-            collected_count += 1
+            appointment_date = parse_datetime(visit['appointmentDate'])
+            max_appointment_date = max(max_appointment_date or appointment_date,
+                                       appointment_date)
             yield Visit(
-                parse_datetime(visit['appointmentDate']),
+                appointment_date,
                 visit['specializationName'],
                 visit['doctorName'],
                 visit['clinicName'],
                 visit['id'])
 
-        first_possible = parse_datetime(data['firstPossibleAppointmentDate'])
-        last_possible = parse_datetime(data['lastPossibleAppointmentDate'])
-
-        if last_possible.year < 2000:
-            # No visits available
-            break
-
-        if (since_time < first_possible):
-            since_time = first_possible
-        else:
-            since_time += DELTA
-
-        if since_time > last_possible:
-            # passed last possible appointment date
-            break
+        since_time = max_appointment_date.replace(hour=0, minute=0, second=0, microsecond=0) + ONE_DAY
 
         if since_time > end_time:
             # passed desired max time
-            break
-
-        if collected_count == 0:
-            # no more visits (?)
             break
 
 
@@ -375,16 +338,15 @@ def main():
 
     login(username, password)
 
-    visit_type = DIAGNOSTIC_PROCEDURE if args.diagnostic_procedure else CONSULTATION
+    visit_type = 'Badanie diagnostyczne' if args.diagnostic_procedure else 'Konsultacja'
     doctors = args.doctor or [None]
-    clinics = args.clinic or [None]
+    clinics = args.clinic
 
     visits = set()
     params = []
     for specialization in args.specialization:
-        for clinic in clinics:
-            for doctor in doctors:
-                params.append(setup_params(args.region, visit_type, specialization, clinic, doctor))
+        for doctor in doctors:
+            params.append(setup_params(args.region, visit_type, specialization, clinics, doctor))
 
     with Spinner('Searching for visits...') as spinner:
         attempt = 0
