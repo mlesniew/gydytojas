@@ -186,8 +186,12 @@ def setup_params(region, service_type, specialization, clinics=None, doctor=None
                 raise SystemExit('Error translating %s "%s" to an id.' % (key, text))
             return mapping[matches[0]]
 
-        # regions, serviceTypes from initial params
-        params['regionIds'] = [match_param(data, 'regions', region)]
+        # if no region was specified, use the default provided by the API
+        if region:
+            params['regionIds'] = [match_param(data, 'regions', region)]
+        else:
+            params['regionIds'] = [data['homeLocationId']]
+
         params['serviceTypeId'] = str(match_param(data, 'serviceTypes', service_type))
 
         # serviceId / specialization
@@ -273,7 +277,6 @@ def main():
     parser = argparse.ArgumentParser(description='Check Medicover visit availability')
 
     parser.add_argument('--region', '-r',
-                        default='Kraków',
                         help='Region')
 
     parser.add_argument('--username', '--user', '-u',
