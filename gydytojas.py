@@ -75,6 +75,38 @@ def parse_datetime(t, maximize=False):
     raise ValueError
 
 
+class Time(datetime.time):
+    @classmethod
+    def parse(cls, spec):
+        elements = spec.strip().split(':')
+        if len(elements) > 3:
+            raise ValueError
+        elements = [int(e) for e in elements] + [0, 0]
+        return cls(elements[0], elements[1], elements[2])
+
+    def __str__(self):
+        return self.strftime('%H:%M:%S')
+
+
+class Timerange(object):
+    def __init__(self, start, end):
+        self.start = start
+        self.end = end
+
+    @classmethod
+    def parse(cls, spec):
+        elements = spec.strip().split('-')
+        if len(elements) != 2:
+            raise ValueError
+        return cls(Time.parse(elements[0]), Time.parse(elements[1]))
+
+    def __str__(self):
+        return f'{self.start}-{self.end}'
+
+    def covers(self, dt):
+        return self.start <= dt.time() <= self.end
+
+
 def format_datetime(t):
     return t.strftime('%Y-%m-%dT%H:%M:%S')
 
@@ -322,6 +354,10 @@ def main():
                              'use negative values to sleep random time up to '
                              'the given amount of seconds')
 
+    parser.add_argument('--time',
+                        type=Timerange.parse,
+                        help='acceptable visit time range')
+
     args = parser.parse_args()
 
     username = args.username or raw_input('user: ')
@@ -354,6 +390,10 @@ def main():
 
         # we might have found visits outside the interesting time range
         visits = [v for v in visits if start <= v.date <= end]
+
+        # let's filter out the visits, which don't cover the desired time
+        if args.time:
+            visits = [v for v in visits if args.time.covers(v.date)]
 
         unique_visits = sorted(set(v[:4] for v in visits))
 
