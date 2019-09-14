@@ -14,12 +14,12 @@ import itertools
 import json
 import random
 import re
+import sys
 import time
 
 from bs4 import BeautifulSoup
 from tabulate import tabulate
 import requests
-from halo import Halo
 
 
 Visit = collections.namedtuple('Visit', 'date specialization doctor clinic visit_id')
@@ -33,14 +33,8 @@ session.hooks = {
         }
 
 
-class Spinner(Halo):
-    def __exit__(self, ex_type, ex_value, ex_traceback):
-        if ex_value:
-            self.fail(str(ex_value) or None)
-        elif self.spinner_id:
-            self.succeed()
-        else:
-            self.stop()
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 
 def parse_datetime(t, maximize=False):
@@ -112,98 +106,100 @@ def extract_form_data(form):
 
 
 def login(username, password):
-    with Spinner('Login'):
-        resp = session.get('https://mol.medicover.pl/Users/Account/LogOn')
+    eprint(f'Logging in (username: {username})')
 
-        # remember URL to post to
-        post_url = resp.url
+    resp = session.get('https://mol.medicover.pl/Users/Account/LogOn')
 
-        # parse the html response
-        soup = Soup(resp)
+    # remember URL to post to
+    post_url = resp.url
 
-        # Extract some retarded token, which needs to be submitted along with the login
-        # information.  The token is a JSON object in a special html element somewhere
-        # deep in the page.  The JSON data has some chars escaped to not break the html.
-        mj_element = soup.find(id='modelJson')
-        mj = json.loads(html.unescape(mj_element.text))
-        af = mj['antiForgery']
+    # parse the html response
+    soup = Soup(resp)
 
-        # This is where the magic happens
-        resp = session.post(
-                post_url,
-                data={
-                    'username': username,
-                    'password': password,
-                    af['name']: af['value'],
-                    }
-                )
+    # Extract some retarded token, which needs to be submitted along with the login
+    # information.  The token is a JSON object in a special html element somewhere
+    # deep in the page.  The JSON data has some chars escaped to not break the html.
+    mj_element = soup.find(id='modelJson')
+    mj = json.loads(html.unescape(mj_element.text))
+    af = mj['antiForgery']
 
-        # After posting the login information and the retarded token, we should get
-        # redirected to some other page with a hidden form.  Apparently in the browser
-        # some JS script simply takes that form and posts it again.  Let's do the
-        # same.
-        soup = Soup(resp)
-        form = soup.form
-        if not (('/connect/authorize' in resp.url) and form):
-            raise SystemExit('Login failed')
-        resp = session.post(form['action'], data=extract_form_data(form))
+    # This is where the magic happens
+    resp = session.post(
+            post_url,
+            data={
+                'username': username,
+                'password': password,
+                af['name']: af['value'],
+                }
+            )
 
-        # If all went well, we should be logged in now.  Try to open the main page...
-        resp = session.get('https://mol.medicover.pl/')
+    # After posting the login information and the retarded token, we should get
+    # redirected to some other page with a hidden form.  Apparently in the browser
+    # some JS script simply takes that form and posts it again.  Let's do the
+    # same.
+    soup = Soup(resp)
+    form = soup.form
+    if not (('/connect/authorize' in resp.url) and form):
+        raise SystemExit('Login failed.')
+    resp = session.post(form['action'], data=extract_form_data(form))
 
-        if resp.url != 'https://mol.medicover.pl/':
-            # We got redirected, probably the login failed and it sent us back to the
-            # login page.
-            raise SystemExit('Login failed.')
+    # If all went well, we should be logged in now.  Try to open the main page...
+    resp = session.get('https://mol.medicover.pl/')
 
-        # we're in, lol
+    if resp.url != 'https://mol.medicover.pl/':
+        # We got redirected, probably the login failed and it sent us back to the
+        # login page.
+        raise SystemExit('Login failed.')
+
+    # we're in, lol
+    eprint('Logged in successfully.')
 
 
 def setup_params(region, service_type, specialization, clinics=None, doctor=None):
-    with Spinner('Setup search parameters (%s / %s / %s / %s / %s)' % (
-        region, service_type, specialization, clinics, doctor)):
+    params = {}
 
-        params = {}
+    # Open the main visit search page to pretend we're a browser
+    session.get('https://mol.medicover.pl/MyVisits')
 
-        # Open the main visit search page to pretend we're a browser
-        session.get('https://mol.medicover.pl/MyVisits')
+    resp = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetInitialFiltersData')
+    data = resp.json()
 
-        resp = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetInitialFiltersData')
-        data = resp.json()
+    def match_param(data, key, text):
+        mapping = {e['text'].lower(): e['id'] for e in data.get(key, [])}
+        matches = difflib.get_close_matches(text.lower(), list(mapping), 1, 0.1)
+        if not matches:
+            raise SystemExit(f'Error translating {key} "{text}" to an id.')
+        match = matches[0]
+        ret = mapping[match]
+        eprint(f'Translated {key} "{text}" to id "{ret}" ("{match}").')
+        return ret
 
-        def match_param(data, key, text):
-            mapping = {e['text'].lower(): e['id'] for e in data.get(key, [])}
-            matches = difflib.get_close_matches(text.lower(), list(mapping), 1, 0.1)
-            if not matches:
-                raise SystemExit('Error translating %s "%s" to an id.' % (key, text))
-            return mapping[matches[0]]
+    # if no region was specified, use the default provided by the API
+    if region:
+        params['regionIds'] = [match_param(data, 'regions', region)]
+    else:
+        params['regionIds'] = [data['homeLocationId']]
 
-        # if no region was specified, use the default provided by the API
-        if region:
-            params['regionIds'] = [match_param(data, 'regions', region)]
-        else:
-            params['regionIds'] = [data['homeLocationId']]
+    params['serviceTypeId'] = str(match_param(data, 'serviceTypes', service_type))
 
-        params['serviceTypeId'] = str(match_param(data, 'serviceTypes', service_type))
+    # serviceId / specialization
+    data = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData',
+                       params=params).json()
+    params['serviceIds'] = [str(match_param(data, 'services', specialization))]
 
-        # serviceId / specialization
+    # clinics
+    if clinics:
         data = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData',
                            params=params).json()
-        params['serviceIds'] = [str(match_param(data, 'services', specialization))]
+        params['clinicIds'] = [match_param(data, 'clinics', clinic) for clinic in clinics]
 
-        # clinics
-        if clinics:
-            data = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData',
-                               params=params).json()
-            params['clinicIds'] = [match_param(data, 'clinics', clinic) for clinic in clinics]
+    if doctor:
+        data = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData',
+                           params=params).json()
+        # for some reason this must be a string, not an int in the posted json
+        params['doctorIds'] = [str(match_param(data, 'doctors', doctor))]
 
-        if doctor:
-            data = session.get('https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData',
-                               params=params).json()
-            # for some reason this must be a string, not an int in the posted json
-            params['doctorIds'] = [str(match_param(data, 'doctors', doctor))]
-
-        return params
+    return params
 
 
 def search(start_time, end_time, params):
@@ -255,14 +251,14 @@ def search(start_time, end_time, params):
 
 
 def autobook(visit):
-    with Spinner('Autobooking first visit'):
-        params = {'id': visit.visit_id}
-        resp = session.get('https://mol.medicover.pl/MyVisits/Process/Process', params=params)
-        resp = session.get('https://mol.medicover.pl/MyVisits/Process/Confirm', params=params)
+    eprint('Autobooking fitst visit...')
+    params = {'id': visit.visit_id}
+    resp = session.get('https://mol.medicover.pl/MyVisits/Process/Process', params=params)
+    resp = session.get('https://mol.medicover.pl/MyVisits/Process/Confirm', params=params)
 
-        soup = Soup(resp)
-        form = soup.find('form', action="/MyVisits/Process/Confirm")
-        resp = session.post('https://mol.medicover.pl/MyVisits/Process/Confirm', data=extract_form_data(form))
+    soup = Soup(resp)
+    form = soup.find('form', action="/MyVisits/Process/Confirm")
+    resp = session.post('https://mol.medicover.pl/MyVisits/Process/Confirm', data=extract_form_data(form))
 
 
 def main():
@@ -343,55 +339,48 @@ def main():
         for doctor in doctors:
             params.append(setup_params(args.region, visit_type, specialization, clinics, doctor))
 
-    with Spinner('Searching for visits...') as spinner:
-        attempt = 0
-        while True:
-            attempt += 1
+    eprint('Searching for visits...')
+    attempt = 0
+    while True:
+        attempt += 1
 
-            if args.keep_going:
-                spinner.text = 'Searching for visits (attempt %i)' % attempt
+        start = max(args.start, datetime.datetime.now() + args.margin)
+        end = args.end
 
-            start = max(args.start, datetime.datetime.now() + args.margin)
-            end = args.end
+        if start >= end:
+            raise SystemExit("It's already too late")
 
-            if start >= end:
-                raise SystemExit("It's already too late")
+        visits = itertools.chain.from_iterable(search(start, end, p) for p in params)
 
-            visits = itertools.chain.from_iterable(search(start, end, p) for p in params)
+        # we might have found visits outside the interesting time range
+        visits = [v for v in visits if start <= v.date <= end]
 
-            # we might have found visits outside the interesting time range
-            visits = [v for v in visits if start <= v.date <= end]
+        unique_visits = sorted(set(v[:4] for v in visits))
 
-            unique_visits = sorted(set(v[:4] for v in visits))
+        if unique_visits:
+            eprint(f'Found {len(unique_visits)} visits.')
+            print(tabulate(
+                unique_visits,
+                headers=Visit._fields[:4]))
 
-            if not unique_visits and args.keep_going:
-                # nothing found, but we'll retry
-                if args.interval:
-                    if args.interval > 0:
-                        sleep_time = args.interval
-                    else:
-                        sleep_time = -1 * args.interval * random.random()
-                    spinner.text = 'No visits found on %i attempt, waiting %.1f seconds' % (attempt, sleep_time)
-                    time.sleep(sleep_time)
-                continue
+            if args.autobook:
+                visit = sorted(visits)[0]
+                autobook(visit)
 
-            if not unique_visits:
-                spinner.fail('No visits found')
-            else:
-                spinner.succeed('Found %i visits' % len(unique_visits))
-                print(tabulate(
-                    unique_visits,
-                    headers=Visit._fields[:4]))
-
-            if not args.autobook:
-                return
-
-            if not visits:
-                raise SystemExit('No visits -- not booking')
-
-            visit = sorted(visits)[0]
-            autobook(visit)
             break
+
+        else:
+            if not args.keep_going:
+                raise SystemExit('No visits found.')
+
+            # nothing found, but we'll retry
+            if args.interval:
+                if args.interval > 0:
+                    sleep_time = args.interval
+                else:
+                    sleep_time = -1 * args.interval * random.random()
+                eprint(f'No visits found on {attempt} attempt, waiting {sleep_time:.1f} seconds...')
+                time.sleep(sleep_time)
 
 
 if __name__ == '__main__':
