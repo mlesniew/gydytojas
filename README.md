@@ -40,8 +40,9 @@ gydytojas.py --username 888888 --password secret --end 2019-01-12 --keep-going -
 usage: gydytojas.py [-h] [--region REGION] [--username USERNAME]
                     [--password PASSWORD] [--doctor DOCTOR] [--clinic CLINIC]
                     [--start start time] [--end end time] [--margin margin]
-                    [--autobook] [--keep-going] [--diagnostic-procedure]
-                    [--interval INTERVAL]
+                    [--autobook] [--reschedule] [--keep-going]
+                    [--diagnostic-procedure] [--interval INTERVAL]
+                    [--time TIME]
                     specialization [specialization ...]
 
 Check Medicover visit availability
@@ -69,6 +70,8 @@ optional arguments:
                         minimum time from now till the visit
   --autobook, --auto, -a
                         automatically book the first available visit
+  --reschedule, -R      reschedule existing appointments if needed when
+                        autobooking
   --keep-going, -k      retry until a visit is found or booked
   --diagnostic-procedure
                         search for diagnostic procedures instead of
@@ -77,9 +80,9 @@ optional arguments:
                         interval between retries in seconds, use negative
                         values to sleep random time up to the given amount of
                         seconds
+  --time TIME           acceptable visit time range
 ```
 
 ## Known bugs
 
-* The script does not detect if autobooking was successful
 * When `-k` is used, the session can eventually time out causing an unhandled exception

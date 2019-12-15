@@ -282,15 +282,69 @@ def search(start_time, end_time, params):
             break
 
 
-def autobook(visit):
+def autobook(visit, allow_reschedule=False):
     eprint('Autobooking fitst visit...')
     params = {'id': visit.visit_id}
     resp = session.get('https://mol.medicover.pl/MyVisits/Process/Process', params=params)
-    resp = session.get('https://mol.medicover.pl/MyVisits/Process/Confirm', params=params)
 
     soup = Soup(resp)
-    form = soup.find('form', action="/MyVisits/Process/Confirm")
-    resp = session.post('https://mol.medicover.pl/MyVisits/Process/Confirm', data=extract_form_data(form))
+    if soup.find('div', id='RescheduleVisitAppElementId'):
+        eprint('Reschedule needed.')
+        if not allow_reschedule:
+            return False
+        script = soup.find(lambda tag: tag.name == 'script' and tag.string and 'var resheduleAppointment' in tag.string)
+        script = str(script)
+
+        # nasty :-)
+        data = dict(m for m in re.findall(r"([a-z]+):\s*'(.*)'\s*[,}]", script, re.M | re.I))
+
+        slot = json.loads(data['slotId'])
+
+        def parse_appointment_date(date):
+            # Example AppointmentDate: '/Date(1576485900000)/'.
+            # The number in the parenthesis is Unix time in milliseconds
+            unix_time = int(''.join(c for c in date if c.isdigit())) / 1000
+            return datetime.datetime.fromtimestamp(unix_time)
+
+        visits = [Visit(parse_appointment_date(a['AppointmentDate']),
+                        a['SpecializationName'],
+                        a['DoctorName'],
+                        a['ClinicName'],
+                        a['AppointmentId'])
+                  for a in json.loads(data['appointments'])]
+        visits.sort()
+
+        eprint(f'Found {len(visits)} colliding visits:')
+        eprint(tabulate([v[:4] for v in visits], headers=Visit._fields[:4]))
+
+        eprint('Canceling first colliding visit...')
+        params = {
+            'slotId': slot,
+            'oldAppointmentId': visits[0].visit_id
+        }
+
+        resp = session.get('https://mol.medicover.pl/MyVisits/Process/Reschedule', params=params)
+        soup = Soup(resp)
+
+        success = soup.find('div', id='rescheduleSuccess')
+        failure = soup.find('div', id='rescheduleFailed')
+
+        if not (success and failure):
+            eprint('Unable to determine if reschedule was successful.')
+            return False
+
+        return 'hidden' in failure.attrs
+
+    else:
+        eprint('Reschedule not needed.')
+        resp = session.get('https://mol.medicover.pl/MyVisits/Process/Confirm', params=params)
+
+        soup = Soup(resp)
+        form = soup.find('form', action="/MyVisits/Process/Confirm")
+        resp = session.post('https://mol.medicover.pl/MyVisits/Process/Confirm', data=extract_form_data(form))
+
+        soup = Soup(resp)
+        return bool(soup.find('div', id='confirm-visit'))
 
 
 def main():
@@ -338,6 +392,10 @@ def main():
     parser.add_argument('--autobook', '--auto', '-a',
                         action='store_true',
                         help='automatically book the first available visit')
+
+    parser.add_argument('--reschedule', '-R',
+                        action='store_true',
+                        help='reschedule existing appointments if needed when autobooking')
 
     parser.add_argument('--keep-going', '-k',
                         action='store_true',
@@ -405,7 +463,10 @@ def main():
 
             if args.autobook:
                 visit = sorted(visits)[0]
-                autobook(visit)
+                if autobook(visit, args.reschedule):
+                    eprint('Autobooking successful.')
+                else:
+                    raise SystemExit('Autobooking failed.')
 
             break
 
