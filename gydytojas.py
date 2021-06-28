@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf8 -*-
 
-from __future__ import unicode_literals
-from __future__ import print_function
-
 import argparse
 import collections
 import datetime
@@ -410,9 +407,8 @@ def main():
     parser.add_argument("--clinic", "-c", action="append", help="desired clinic, multiple can be given")
 
     parser.add_argument(
-        "--start",
-        "--from",
-        "-f",
+        "--after",
+        "-A",
         default="2000-01-01",
         type=parse_datetime,
         metavar="start time",
@@ -420,11 +416,8 @@ def main():
     )
 
     parser.add_argument(
-        "--end",
-        "--until",
-        "--till",
-        "--to",
-        "-t",
+        "--before",
+        "-B",
         default="2100-01-01",
         type=lambda t: parse_datetime(t, True),
         metavar="end time",
@@ -502,8 +495,8 @@ def main():
     while True:
         attempt += 1
 
-        start = max(args.start, datetime.datetime.now() + args.margin)
-        end = args.end
+        start = max(args.after, datetime.datetime.now() + args.margin)
+        end = args.before
 
         if start >= end:
             raise SystemExit("It's already too late")
