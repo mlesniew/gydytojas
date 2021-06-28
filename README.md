@@ -37,12 +37,8 @@ gydytojas.py --username 888888 --password secret --end 2019-01-12 --keep-going -
 ## Full help
 
 ```
-usage: gydytojas.py [-h] [--region REGION] [--username USERNAME]
-                    [--password PASSWORD] [--doctor DOCTOR] [--clinic CLINIC]
-                    [--start start time] [--end end time] [--margin margin]
-                    [--autobook] [--reschedule] [--keep-going]
-                    [--diagnostic-procedure] [--interval INTERVAL]
-                    [--time TIME]
+usage: gydytojas.py [-h] [--region REGION] [--username USERNAME] [--password PASSWORD] [--doctor DOCTOR] [--clinic CLINIC] [--after start time] [--before end time] [--margin margin] [--autobook] [--reschedule]
+                    [--keep-going] [--diagnostic-procedure] [--interval INTERVAL] [--time TIME]
                     specialization [specialization ...]
 
 Check Medicover visit availability
@@ -62,24 +58,20 @@ optional arguments:
                         desired doctor, multiple can be given
   --clinic CLINIC, -c CLINIC
                         desired clinic, multiple can be given
-  --start start time, --from start time, -f start time
+  --after start time, -A start time
                         search period start time.
-  --end end time, --until end time, --till end time, --to end time, -t end time
+  --before end time, -B end time
                         search period end time
   --margin margin, -m margin
                         minimum time from now till the visit
   --autobook, --auto, -a
                         automatically book the first available visit
-  --reschedule, -R      reschedule existing appointments if needed when
-                        autobooking
+  --reschedule, -R      reschedule existing appointments if needed when autobooking
   --keep-going, -k      retry until a visit is found or booked
   --diagnostic-procedure
-                        search for diagnostic procedures instead of
-                        consultations
+                        search for diagnostic procedures instead of consultations
   --interval INTERVAL, -i INTERVAL
-                        interval between retries in seconds, use negative
-                        values to sleep random time up to the given amount of
-                        seconds
+                        interval between retries in seconds, use negative values to sleep random time up to the given amount of seconds
   --time TIME           acceptable visit time range
 ```
 
