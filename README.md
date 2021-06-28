@@ -86,3 +86,8 @@ optional arguments:
 ## Known bugs
 
 * When `-k` is used, the session can eventually time out causing an unhandled exception
+
+## Credits
+
+The steps required to login to the Medicover system were copied from the excellent
+[Medihunter][https://github.com/apqlzm/medihunter] project.

@@ -9,7 +9,6 @@ import collections
 import datetime
 import difflib
 import getpass
-import html
 import itertools
 import json
 import random
@@ -26,10 +25,17 @@ Visit = collections.namedtuple("Visit", "date specialization doctor clinic visit
 
 
 session = requests.session()
-session.headers["accept"] = "application/json"
-session.headers[
-    "User-Agent"
-] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/69.0.3497.81 Chrome/69.0.3497.81 Safari/537.36"
+session.headers.update(
+    {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:52.0) Gecko/20100101 Firefox/52.0",
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "pl,en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+)
+
 session.hooks = {"response": lambda r, *args, **kwargs: r.raise_for_status()}
 
 
@@ -112,9 +118,7 @@ def format_datetime(t):
 
 
 def parse_timedelta(t):
-    p = re.compile(
-        r"((?P<days>\d+?)(d))?\s*((?P<hours>\d+?)(hr|h))?\s*((?P<minutes>\d+?)(m))?$"
-    )
+    p = re.compile(r"((?P<days>\d+?)(d))?\s*((?P<hours>\d+?)(hr|h))?\s*((?P<minutes>\d+?)(m))?$")
     m = p.match(t)
     if not m:
         raise ValueError
@@ -142,51 +146,72 @@ def extract_form_data(form):
 def login(username, password):
     eprint(f"Logging in (username: {username})")
 
-    resp = session.get("https://mol.medicover.pl/Users/Account/LogOn")
+    # These steps were copied from medihunter (https://github.com/apqlzm/medihunter)
 
-    # remember URL to post to
-    post_url = resp.url
-
-    # parse the html response
-    soup = Soup(resp)
-
-    # Extract some retarded token, which needs to be submitted along with the login
-    # information.  The token is a JSON object in a special html element somewhere
-    # deep in the page.  The JSON data has some chars escaped to not break the html.
-    mj_element = soup.find(id="modelJson")
-    mj = json.loads(html.unescape(mj_element.text))
-    af = mj["antiForgery"]
-
-    # This is where the magic happens
-    resp = session.post(
-        post_url,
-        data={
-            "username": username,
-            "password": password,
-            af["name"]: af["value"],
-        },
+    # 1. GET https://mol.medicover.pl/Users/Account/LogOn?ReturnUrl=%2F
+    response = session.get(
+        "https://mol.medicover.pl/Users/Account/LogOn?ReturnUrl=%2F",
+        allow_redirects=False,
     )
+    next_url = response.headers["Location"]
 
-    # After posting the login information and the retarded token, we should get
-    # redirected to some other page with a hidden form.  Apparently in the browser
-    # some JS script simply takes that form and posts it again.  Let's do the
-    # same.
-    soup = Soup(resp)
-    form = soup.form
-    if not (("/connect/authorize" in resp.url) and form):
-        raise SystemExit("Login failed.")
-    resp = session.post(form["action"], data=extract_form_data(form))
+    # 2. GET
+    # https://oauth.medicover.pl/connect/authorize?client_id=Mcov_Mol&response_type=code+id_token&scope=openid&redirect_uri=https%3A%2F%2Fmol...
+    response = session.get(next_url, allow_redirects=False)
+    next_url = response.headers["Location"]
 
-    # If all went well, we should be logged in now.  Try to open the main page...
-    resp = session.get("https://mol.medicover.pl/")
+    # 3. GET
+    # https://oauth.medicover.pl/login?signin=5512f89689e74ce9d5515f6a84d76
+    response = session.get(next_url, allow_redirects=False)
+    next_referer = next_url
 
-    if resp.url != "https://mol.medicover.pl/":
-        # We got redirected, probably the login failed and it sent us back to the
-        # login page.
-        raise SystemExit("Login failed.")
+    # 4. GET
+    # https://oauth.medicover.pl/external?provider=IS3&signin=944f8051df4165a710e592dd7f8a&owner=Mcov_Mol&ui_locales=pl-PL
+    session.headers["Referer"] = next_referer
+    response = session.get(
+        "https://oauth.medicover.pl/external",
+        params={
+            "provider": "IS3",
+            "signin": next_url.split("=")[-1],
+            "owner": "Mcov_Mol",
+            "ui_locales": "pl-PL",
+        },
+        allow_redirects=False,
+    )
+    next_url = response.headers["Location"]
+
+    # 5. GET
+    # https://login.medicover.pl/connect/authorize?client_id=is3&redirect_uri=https%3a%2f%2foauth.medicover.pl...
+    response = session.get(next_url)
+
+    data = extract_form_data(Soup(response))
+    data.update({"UserName": username, "Password": password})
+    login_url = response.url
+
+    # 6. POST
+    # https://login.medicover.pl/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback%3Fclient_id%3Dis3...
+    response = session.post(login_url, data=data)
+    data = extract_form_data(Soup(response))
+
+    # 7. POST
+    response = session.post("https://oauth.medicover.pl/signin-oidc", data=data)
+    data = extract_form_data(Soup(response))
+    next_referer = response.url
+
+    # 8 POST
+    response = session.post("https://mol.medicover.pl/Medicover.OpenIdConnectAuthentication/Account/OAuthSignIn",
+                            data=data)
+
+    # 9. GET
+    session.headers["Referer"] = "https://mol.medicover.pl/Medicover.OpenIdConnectAuthentication/Account/OAuthSignIn"
+    response = session.get(
+        "https://mol.medicover.pl/",
+        data=data,
+    )
 
     # we're in, lol
     eprint("Logged in successfully.")
+    return response
 
 
 def setup_params(region, service_type, specialization, clinics=None, doctor=None):
@@ -195,9 +220,7 @@ def setup_params(region, service_type, specialization, clinics=None, doctor=None
     # Open the main visit search page to pretend we're a browser
     session.get("https://mol.medicover.pl/MyVisits")
 
-    resp = session.get(
-        "https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetInitialFiltersData"
-    )
+    resp = session.get("https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetInitialFiltersData")
     data = resp.json()
 
     def match_param(data, key, text):
@@ -231,9 +254,7 @@ def setup_params(region, service_type, specialization, clinics=None, doctor=None
             "https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData",
             params=params,
         ).json()
-        params["clinicIds"] = [
-            match_param(data, "clinics", clinic) for clinic in clinics
-        ]
+        params["clinicIds"] = [match_param(data, "clinics", clinic) for clinic in clinics]
 
     if doctor:
         data = session.get(
@@ -278,9 +299,7 @@ def search(start_time, end_time, params):
 
         for visit in data["items"]:
             appointment_date = parse_datetime(visit["appointmentDate"])
-            max_appointment_date = max(
-                max_appointment_date or appointment_date, appointment_date
-            )
+            max_appointment_date = max(max_appointment_date or appointment_date, appointment_date)
             yield Visit(
                 appointment_date,
                 visit["specializationName"],
@@ -289,10 +308,7 @@ def search(start_time, end_time, params):
                 visit["id"],
             )
 
-        since_time = (
-            max_appointment_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            + ONE_DAY
-        )
+        since_time = max_appointment_date.replace(hour=0, minute=0, second=0, microsecond=0) + ONE_DAY
 
         if since_time > end_time:
             # passed desired max time
@@ -302,26 +318,18 @@ def search(start_time, end_time, params):
 def autobook(visit, allow_reschedule=False):
     eprint("Autobooking fitst visit...")
     params = {"id": visit.visit_id}
-    resp = session.get(
-        "https://mol.medicover.pl/MyVisits/Process/Process", params=params
-    )
+    resp = session.get("https://mol.medicover.pl/MyVisits/Process/Process", params=params)
 
     soup = Soup(resp)
     if soup.find("div", id="RescheduleVisitAppElementId"):
         eprint("Reschedule needed.")
         if not allow_reschedule:
             return False
-        script = soup.find(
-            lambda tag: tag.name == "script"
-            and tag.string
-            and "var resheduleAppointment" in tag.string
-        )
+        script = soup.find(lambda tag: tag.name == "script" and tag.string and "var resheduleAppointment" in tag.string)
         script = str(script)
 
         # nasty :-)
-        data = dict(
-            m for m in re.findall(r"([a-z]+):\s*'(.*)'\s*[,}]", script, re.M | re.I)
-        )
+        data = dict(m for m in re.findall(r"([a-z]+):\s*'(.*)'\s*[,}]", script, re.M | re.I))
 
         slot = json.loads(data["slotId"])
 
@@ -349,9 +357,7 @@ def autobook(visit, allow_reschedule=False):
         eprint("Canceling first colliding visit...")
         params = {"slotId": slot, "oldAppointmentId": visits[0].visit_id}
 
-        resp = session.get(
-            "https://mol.medicover.pl/MyVisits/Process/Reschedule", params=params
-        )
+        resp = session.get("https://mol.medicover.pl/MyVisits/Process/Reschedule", params=params)
         soup = Soup(resp)
 
         success = soup.find("div", id="rescheduleSuccess")
@@ -365,9 +371,7 @@ def autobook(visit, allow_reschedule=False):
 
     else:
         eprint("Reschedule not needed.")
-        resp = session.get(
-            "https://mol.medicover.pl/MyVisits/Process/Confirm", params=params
-        )
+        resp = session.get("https://mol.medicover.pl/MyVisits/Process/Confirm", params=params)
 
         soup = Soup(resp)
         form = soup.find("form", action="/MyVisits/Process/Confirm")
@@ -403,9 +407,7 @@ def main():
         help="desired doctor, multiple can be given",
     )
 
-    parser.add_argument(
-        "--clinic", "-c", action="append", help="desired clinic, multiple can be given"
-    )
+    parser.add_argument("--clinic", "-c", action="append", help="desired clinic, multiple can be given")
 
     parser.add_argument(
         "--start",
@@ -476,9 +478,7 @@ def main():
         "the given amount of seconds",
     )
 
-    parser.add_argument(
-        "--time", type=Timerange.parse, help="acceptable visit time range"
-    )
+    parser.add_argument("--time", type=Timerange.parse, help="acceptable visit time range")
 
     args = parser.parse_args()
 
@@ -495,9 +495,7 @@ def main():
     params = []
     for specialization in args.specialization:
         for doctor in doctors:
-            params.append(
-                setup_params(args.region, visit_type, specialization, clinics, doctor)
-            )
+            params.append(setup_params(args.region, visit_type, specialization, clinics, doctor))
 
     eprint("Searching for visits...")
     attempt = 0
@@ -544,9 +542,7 @@ def main():
                     sleep_time = args.interval
                 else:
                     sleep_time = -1 * args.interval * random.random()
-                eprint(
-                    f"No visits found on {attempt} attempt, waiting {sleep_time:.1f} seconds..."
-                )
+                eprint(f"No visits found on {attempt} attempt, waiting {sleep_time:.1f} seconds...")
                 time.sleep(sleep_time)
 
 
