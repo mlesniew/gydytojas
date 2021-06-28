@@ -132,7 +132,7 @@ def parse_timedelta(t):
 
 
 def Soup(response):
-    return BeautifulSoup(response.content, "lxml")
+    return BeautifulSoup(response.content, "html.parser")
 
 
 def extract_form_data(form):
