@@ -1,7 +1,9 @@
-FROM python:3
+FROM python:3-slim
 
-COPY . /opt/
+LABEL org.opencontainers.image.source=https://github.com/mlesniew/gydytojas
 
-RUN pip install --no-cache-dir -r /opt/requirements.txt
+COPY gydytojas.py requirements.txt /app/
 
-ENTRYPOINT ["python3", "/opt/gydytojas.py"]
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+ENTRYPOINT ["python3", "/app/gydytojas.py"]
