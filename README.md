@@ -75,6 +75,15 @@ optional arguments:
   --time TIME           acceptable visit time range
 ```
 
+
+## Running with Docker
+
+The script can be run using Docker.  The image can be built locally the usual way or pulled from the GitHub Container registry:
+```
+docker run --rm ghcr.io/mlesniew/gydytojas
+```
+
+
 ## Known bugs
 
 * When `-k` is used, the session can eventually time out causing an unhandled exception
