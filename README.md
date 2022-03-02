@@ -82,4 +82,4 @@ optional arguments:
 ## Credits
 
 The steps required to login to the Medicover system were copied from the excellent
-[Medihunter][https://github.com/apqlzm/medihunter] project.
+[Medihunter](https://github.com/apqlzm/medihunter) project.
