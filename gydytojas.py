@@ -18,7 +18,7 @@ from tabulate import tabulate
 import requests
 
 
-Visit = collections.namedtuple("Visit", "date specialization doctor clinic visit_id")
+Visit = collections.namedtuple("Visit", "date specialization doctor clinic visit_id phone_consultation")
 
 
 session = requests.session()
@@ -196,8 +196,10 @@ def login(username, password):
     next_referer = response.url
 
     # 8 POST
-    response = session.post("https://mol.medicover.pl/Medicover.OpenIdConnectAuthentication/Account/OAuthSignIn",
-                            data=data)
+    response = session.post(
+        "https://mol.medicover.pl/Medicover.OpenIdConnectAuthentication/Account/OAuthSignIn",
+        data=data,
+    )
 
     # 9. GET
     session.headers["Referer"] = "https://mol.medicover.pl/Medicover.OpenIdConnectAuthentication/Account/OAuthSignIn"
@@ -303,6 +305,7 @@ def search(start_time, end_time, params):
                 visit["doctorName"],
                 visit["clinicName"],
                 visit["id"],
+                visit["isPhoneConsultation"],
             )
 
         since_time = max_appointment_date.replace(hour=0, minute=0, second=0, microsecond=0) + ONE_DAY
@@ -471,6 +474,13 @@ def main():
         "the given amount of seconds",
     )
 
+    parser.add_argument(
+        "--phone",
+        "-P",
+        action="store_true",
+        help="Also search for phone consultations (disabled by default)",
+    )
+
     parser.add_argument("--time", type=Timerange.parse, help="acceptable visit time range")
 
     args = parser.parse_args()
@@ -502,6 +512,9 @@ def main():
             raise SystemExit("It's already too late")
 
         visits = itertools.chain.from_iterable(search(start, end, p) for p in params)
+
+        if not args.phone:
+            visits = [v for v in visits if not v.phone_consultation]
 
         # we might have found visits outside the interesting time range
         visits = [v for v in visits if start <= v.date <= end]
