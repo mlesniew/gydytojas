@@ -2,38 +2,28 @@
 # -*- coding: utf8 -*-
 
 import argparse
+import functools
+import base64
 import collections
 import datetime
 import difflib
 import getpass
-import itertools
-import json
+import hashlib
 import random
 import re
+import string
 import sys
 import time
+import uuid
+import urllib.parse
 
 from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
 from tabulate import tabulate
 import requests
 
 
-Visit = collections.namedtuple("Visit", "date specialization doctor clinic visit_id phone_consultation")
-
-
-session = requests.session()
-session.headers.update(
-    {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-        "Accept-Language": "pl,en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    }
-)
-
-session.hooks = {"response": lambda r, *args, **kwargs: r.raise_for_status()}
+Visit = collections.namedtuple("Visit", "date specialty doctor clinic visit_id phone_consultation")
 
 
 def eprint(*args, **kwargs):
@@ -140,263 +130,235 @@ def extract_form_data(form):
     return {field.get("name"): field.get("value") for field in fields}
 
 
-def login(username, password):
-    eprint(f"Logging in (username: {username})")
+class Medicover:
+    LOGIN_URL = "https://login-online24.medicover.pl"
+    OIDC_REDIRECT = "https://online24.medicover.pl/signin-oidc"
 
-    # These steps were copied from medihunter (https://github.com/apqlzm/medihunter)
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
+        self.session = requests.session()
+        self.session.headers.update(
+            {
+                "User-Agent": UserAgent().random,
+                "Accept": "application/json",
+                # "Authorization": None
+            }
+        )
+        self.session.hooks = {"response": lambda r, *args, **kwargs: r.raise_for_status()}
+        self.filters = collections.defaultdict(dict)
+        self.access_token = None
+        self.refresh_token = None
+        self.token_expiry = None
 
-    # 1. GET https://mol.medicover.pl/Users/Account/LogOn?ReturnUrl=%2F
-    response = session.get(
-        "https://mol.medicover.pl/Users/Account/LogOn?ReturnUrl=%2F",
-        allow_redirects=False,
-    )
-    next_url = response.headers["Location"]
+    def login(self):
+        eprint(f"Logging in (username: {self.username})")
 
-    # 2. GET
-    # https://oauth.medicover.pl/connect/authorize?client_id=Mcov_Mol&response_type=code+id_token&scope=openid&redirect_uri=https%3A%2F%2Fmol...
-    response = session.get(next_url, allow_redirects=False)
-    next_url = response.headers["Location"]
+        def generate_code_challenge(input):
+            sha256 = hashlib.sha256(input.encode("utf-8")).digest()
+            return base64.urlsafe_b64encode(sha256).decode("utf-8").rstrip("=")
 
-    # 3. GET
-    # https://oauth.medicover.pl/login?signin=5512f89689e74ce9d5515f6a84d76
-    response = session.get(next_url, allow_redirects=False)
-    next_referer = next_url
+        state = "".join(random.choices(string.ascii_lowercase + string.digits, k=32))
+        device_id = str(uuid.uuid4())
+        code_verifier = "".join(uuid.uuid4().hex for _ in range(3))
+        code_challenge = generate_code_challenge(code_verifier)
 
-    # 4. GET
-    # https://oauth.medicover.pl/external?provider=IS3&signin=944f8051df4165a710e592dd7f8a&owner=Mcov_Mol&ui_locales=pl-PL
-    session.headers["Referer"] = next_referer
-    response = session.get(
-        "https://oauth.medicover.pl/external",
-        params={
-            "provider": "IS3",
-            "signin": next_url.split("=")[-1],
-            "owner": "Mcov_Mol",
-            "ui_locales": "pl-PL",
-        },
-        allow_redirects=False,
-    )
-    next_url = response.headers["Location"]
+        auth_params = (
+            f"?client_id=web&redirect_uri={self.OIDC_REDIRECT}&response_type=code"
+            f"&scope=openid+offline_access+profile&state={state}&code_challenge={code_challenge}"
+            "&code_challenge_method=S256&response_mode=query&ui_locales=pl&app_version=3.2.0.482"
+            f"&previous_app_version=3.2.0.482&device_id={device_id}&device_name=Chrome"
+        )
 
-    # 5. GET
-    # https://login.medicover.pl/connect/authorize?client_id=is3&redirect_uri=https%3a%2f%2foauth.medicover.pl...
-    response = session.get(next_url)
+        # Step 1: Initialize login
+        response = self.session.get(f"{self.LOGIN_URL}/connect/authorize{auth_params}", allow_redirects=False)
+        next_url = response.headers.get("Location")
 
-    data = extract_form_data(Soup(response))
-    data.update({"UserName": username, "Password": password})
-    login_url = response.url
+        # Step 2: Extract CSRF token
+        response = self.session.get(next_url, allow_redirects=False)
+        soup = Soup(response)
+        csrf_token = soup.find("input", {"name": "__RequestVerificationToken"}).get("value")
 
-    # 6. POST
-    # https://login.medicover.pl/Account/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback%3Fclient_id%3Dis3...
-    response = session.post(login_url, data=data)
-    data = extract_form_data(Soup(response))
+        # Step 3: Submit login form
+        login_data = {
+            "Input.ReturnUrl": f"/connect/authorize/callback{auth_params}",
+            "Input.LoginType": "FullLogin",
+            "Input.Username": self.username,
+            "Input.Password": self.password,
+            "Input.Button": "login",
+            "__RequestVerificationToken": csrf_token,
+        }
+        response = self.session.post(next_url, data=login_data, allow_redirects=False)
+        next_url = response.headers.get("Location")
 
-    # 7. POST
-    response = session.post("https://oauth.medicover.pl/signin-oidc", data=data)
-    data = extract_form_data(Soup(response))
-    next_referer = response.url
+        # Step 4: Fetch authorization code
+        response = self.session.get(f"{self.LOGIN_URL}{next_url}", allow_redirects=False)
+        next_url = response.headers.get("Location")
+        code = urllib.parse.parse_qs(urllib.parse.urlparse(next_url).query)["code"][0]
 
-    # 8 POST
-    response = session.post(
-        "https://mol.medicover.pl/Medicover.OpenIdConnectAuthentication/Account/OAuthSignIn",
-        data=data,
-    )
+        # Step 5: Exchange code for tokens
+        token_data = {
+            "grant_type": "authorization_code",
+            "redirect_uri": self.OIDC_REDIRECT,
+            "code": code,
+            "code_verifier": code_verifier,
+            "client_id": "web",
+        }
+        response = self.session.post(f"{self.LOGIN_URL}/connect/token", data=token_data)
+        tokens = response.json()
+        self.access_token = tokens["access_token"]
+        self.refresh_token = tokens["refresh_token"]
+        self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+        self.token_expiry = datetime.datetime.now() + datetime.timedelta(seconds=tokens["expires_in"])
 
-    # 9. GET
-    session.headers["Referer"] = "https://mol.medicover.pl/Medicover.OpenIdConnectAuthentication/Account/OAuthSignIn"
-    response = session.get(
-        "https://mol.medicover.pl/",
-        data=data,
-    )
+    @property
+    def logged_in(self):
+        return bool(self.access_token)
 
-    # we're in, lol
-    eprint("Logged in successfully.")
-    return response
+    def refresh_token_if_near_expiry(self, margin=20):
+        if not self.logged_in:
+            return
+        if datetime.datetime.now() + datetime.timedelta(seconds=margin) < self.token_expiry:
+            return
+        eprint("Refreshing token...")
+        del self.session.headers["Authorization"]
+        token_data = {
+            "grant_type": "refresh_token",
+            "refresh_token": self.refresh_token,
+            "client_id": "web",
+            "scope": "openid+offline_access+profile",
+        }
+        response = self.session.post("https://login-online24.medicover.pl/connect/token", data=token_data)
+        tokens = response.json()
+        self.access_token = tokens["access_token"]
+        self.refresh_token = tokens["refresh_token"]
+        self.session.headers["Authorization"] = f"Bearer {self.access_token}"
+        self.token_expiry = datetime.datetime.now() + datetime.timedelta(seconds=tokens["expires_in"])
 
+    def sleep(self, seconds, margin=10):
+        end_time = datetime.datetime.now() + datetime.timedelta(seconds=seconds)
+        # TODO: This is nasty, fix this...
+        while datetime.datetime.now() < end_time:
+            self.refresh_token_if_near_expiry(margin)
+            time.sleep(0.5)
 
-def setup_params(region, service_type, specialization, clinics=None, doctor=None):
-    params = {}
+    @functools.cache
+    def load_filters(self, region_id=None, specialty_id=None):
+        params = {"SlotSearchType": "0"}
+        if region_id:
+            params["RegionIds"] = region_id
+        if specialty_id:
+            params["SpecialtyIds"] = specialty_id
+        response = self.session.get(
+            "https://api-gateway-online24.medicover.pl/appointments/api/search-appointments/filters", params=params
+        )
+        for category, mapping in response.json().items():
+            self.filters[category].update({e["value"].strip(): e["id"] for e in mapping})
 
-    # Open the main visit search page to pretend we're a browser
-    session.get("https://mol.medicover.pl/MyVisits")
+    @functools.cached_property
+    def personal_data(self):
+        response = self.session.get("https://api-gateway-online24.medicover.pl/personal-data/api/personal")
+        return response.json()
 
-    resp = session.get("https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetInitialFiltersData")
-    data = resp.json()
+    @property
+    def home_region_id(self):
+        return self.personal_data["homeClinicId"]
 
-    def match_param(data, key, text):
-        mapping = {e["text"].lower(): e["id"] for e in data.get(key, [])}
+    @staticmethod
+    def match_param(mapping, text):
         matches = difflib.get_close_matches(text.lower(), list(mapping), 1, 0.1)
         if not matches:
-            raise SystemExit(f'Error translating {key} "{text}" to an id.')
+            raise SystemExit(f'Error translating "{text}" to an id.')
         match = matches[0]
         ret = mapping[match]
-        eprint(f'Translated {key} "{text}" to id "{ret}" ("{match}").')
+        eprint(f'Translated "{text}" to id "{ret}" ("{match}").')
         return ret
 
-    # if no region was specified, use the default provided by the API
-    if region:
-        params["regionIds"] = [match_param(data, "regions", region)]
-    else:
-        params["regionIds"] = [data["homeLocationId"]]
+    def get_search_params(self, region, specialties, doctors=[], clinics=[]):
+        if not region:
+            region_id = self.home_region_id
+            eprint(f'Using home region id "{region_id}"')
+        else:
+            self.load_filters()
+            region_id = self.match_param(self.filters["regions"], region)
 
-    params["serviceTypeId"] = str(match_param(data, "serviceTypes", service_type))
+        self.load_filters(region_id)
+        specialty_ids = [self.match_param(self.filters["specialties"], specialty) for specialty in specialties]
 
-    # serviceId / specialization
-    data = session.get(
-        "https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData",
-        params=params,
-    ).json()
-    params["serviceIds"] = [str(match_param(data, "services", specialization))]
+        for specialty_id in specialty_ids:
+            self.load_filters(region_id, specialty_id)
 
-    # clinics
-    if clinics:
-        data = session.get(
-            "https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData",
-            params=params,
-        ).json()
-        params["clinicIds"] = [match_param(data, "clinics", clinic) for clinic in clinics]
+        params = {
+            "SlotSearchType": "0",
+            "Page": "1",
+            "PageSize": "5000",
+            "VisitType": "Center",
+        }
+        if region_id:
+            params["RegionIds"] = region_id
+        if specialty_id:
+            params["SpecialtyIds"] = specialty_ids
+        if clinics:
+            params["ClinicIds"] = [self.match_param(self.filters["clinics"], clinic) for clinic in clinics]
+        if doctors:
+            params["DoctorIds"] = [self.match_param(self.filters["doctors"], doctor) for doctor in doctors]
 
-    if doctor:
-        data = session.get(
-            "https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook/GetFiltersData",
-            params=params,
-        ).json()
-        # for some reason this must be a string, not an int in the posted json
-        params["doctorIds"] = [str(match_param(data, "doctors", doctor))]
+        return params
 
-    return params
+    def search(self, region, specialties, doctors, clinics, after=None, before=None):
+        after = after or datetime.datetime.now()
+        before = before or after + datetime.timedelta(days=30)
 
+        after = max(datetime.datetime.now(), after)
 
-def search(start_time, end_time, params):
-    payload = {
-        "regionIds": [],
-        "serviceTypeId": "1",
-        "serviceIds": [],
-        "clinicIds": [],
-        "doctorLanguagesIds": [],
-        "doctorIds": [],
-        "searchSince": None,
-    }
-    payload.update(params)
-
-    since_time = max(datetime.datetime.now(), start_time)
-    ONE_DAY = datetime.timedelta(days=1)
-
-    while True:
-        payload["searchSince"] = format_datetime(since_time)
-        max_appointment_date = None
-        params = {"language": "pl-PL"}
-        resp = session.post(
-            "https://mol.medicover.pl/api/MyVisits/SearchFreeSlotsToBook",
-            params=params,
-            json=payload,
-        )
-        data = resp.json()
-
-        if not data["items"]:
-            # no more visits
-            break
-
-        for visit in data["items"]:
-            appointment_date = parse_datetime(visit["appointmentDate"])
-            max_appointment_date = max(max_appointment_date or appointment_date, appointment_date)
-            yield Visit(
-                appointment_date,
-                visit["specializationName"],
-                visit["doctorName"],
-                visit["clinicName"],
-                visit["id"],
-                visit["isPhoneConsultation"],
+        while after < before:
+            self.refresh_token_if_near_expiry()
+            params = self.get_search_params(region, specialties, doctors, clinics)
+            params["StartTime"] = after.date().isoformat()
+            response = self.session.get(
+                "https://api-gateway-online24.medicover.pl/appointments/api/search-appointments/slots", params=params
             )
+            data = response.json()
 
-        since_time = max_appointment_date.replace(hour=0, minute=0, second=0, microsecond=0) + ONE_DAY
+            if not data["items"]:
+                # no more visits
+                break
 
-        if since_time > end_time:
-            # passed desired max time
-            break
+            for visit in data["items"]:
+                yield Visit(
+                    parse_datetime(visit["appointmentDate"]),
+                    visit["specialty"]["name"],
+                    visit["doctor"]["name"],
+                    visit["clinic"]["name"],
+                    visit["bookingString"],
+                    visit["visitType"] != "Center",
+                )
 
+            if next_search_date := data["nextSearchDate"]:
+                after = parse_datetime(next_search_date)
+            else:
+                break
 
-def autobook(visit, allow_reschedule=False):
-    eprint("Autobooking fitst visit...")
-    params = {"id": visit.visit_id}
-    resp = session.get("https://mol.medicover.pl/MyVisits/Process/Process", params=params)
-
-    soup = Soup(resp)
-    if soup.find("div", id="RescheduleVisitAppElementId"):
-        eprint("Reschedule needed.")
-        if not allow_reschedule:
-            return False
-        script = soup.find(lambda tag: tag.name == "script" and tag.string and "var resheduleAppointment" in tag.string)
-        script = str(script)
-
-        # nasty :-)
-        data = dict(m for m in re.findall(r"([a-z]+):\s*'(.*)'\s*[,}]", script, re.M | re.I))
-
-        slot = json.loads(data["slotId"])
-
-        def parse_appointment_date(date):
-            # Example AppointmentDate: '/Date(1576485900000)/'.
-            # The number in the parenthesis is Unix time in milliseconds
-            unix_time = int("".join(c for c in date if c.isdigit())) / 1000
-            return datetime.datetime.fromtimestamp(unix_time)
-
-        visits = [
-            Visit(
-                parse_appointment_date(a["AppointmentDate"]),
-                a["SpecializationName"],
-                a["DoctorName"],
-                a["ClinicName"],
-                a["AppointmentId"],
-            )
-            for a in json.loads(data["appointments"])
-        ]
-        visits.sort()
-
-        eprint(f"Found {len(visits)} colliding visits:")
-        eprint(tabulate([v[:4] for v in visits], headers=Visit._fields[:4]))
-
-        eprint("Canceling first colliding visit...")
-        params = {"slotId": slot, "oldAppointmentId": visits[0].visit_id}
-
-        resp = session.get("https://mol.medicover.pl/MyVisits/Process/Reschedule", params=params)
-        soup = Soup(resp)
-
-        success = soup.find("div", id="rescheduleSuccess")
-        failure = soup.find("div", id="rescheduleFailed")
-
-        if not (success and failure):
-            eprint("Unable to determine if reschedule was successful.")
-            return False
-
-        return "hidden" in failure.attrs
-
-    else:
-        eprint("Reschedule not needed.")
-        resp = session.get("https://mol.medicover.pl/MyVisits/Process/Confirm", params=params)
-
-        soup = Soup(resp)
-        form = soup.find("form", action="/MyVisits/Process/Confirm")
-        resp = session.post(
-            "https://mol.medicover.pl/MyVisits/Process/Confirm",
-            data=extract_form_data(form),
+    def book(self, visit):
+        self.refresh_token_if_near_expiry()
+        data = {"bookingString": visit.visit_id, "metadata": {"appointmentSource": "Direct"}}
+        response = self.session.post(
+            "https://api-gateway-online24.medicover.pl/appointments/api/search-appointments/book-appointment", json=data
         )
-
-        soup = Soup(resp)
-        return bool(soup.find("div", id="confirm-visit"))
+        eprint(f"Booked appointment, id = {response.json()['appointmentId']}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Check Medicover visit availability")
 
     parser.add_argument("--region", "-r", help="Region")
-
     parser.add_argument("--username", "--user", "-u", help="user name used for login")
-
     parser.add_argument("--password", "--pass", "-p", help="password used for login")
 
     parser.add_argument(
-        "specialization",
+        "specialty",
         nargs="+",
-        help="desired specialization, multiple can be given",
+        help="desired specialty, multiple can be given",
     )
 
     parser.add_argument(
@@ -445,13 +407,6 @@ def main():
     )
 
     parser.add_argument(
-        "--reschedule",
-        "-R",
-        action="store_true",
-        help="reschedule existing appointments if needed when autobooking",
-    )
-
-    parser.add_argument(
         "--keep-going",
         "-k",
         action="store_true",
@@ -468,7 +423,7 @@ def main():
         "--interval",
         "-i",
         type=int,
-        default=5,
+        default=-60,
         help="interval between retries in seconds, "
         "use negative values to sleep random time up to "
         "the given amount of seconds",
@@ -485,59 +440,47 @@ def main():
 
     args = parser.parse_args()
 
-    username = args.username or raw_input("user: ")
+    username = args.username or input("user: ")
     password = args.password or getpass.getpass("pass: ")
 
-    login(username, password)
+    medicover = Medicover(username, password)
 
-    visit_type = "Badanie diagnostyczne" if args.diagnostic_procedure else "Konsultacja"
-    doctors = args.doctor or [None]
-    clinics = args.clinic
-
-    visits = set()
-    params = []
-    for specialization in args.specialization:
-        for doctor in doctors:
-            params.append(setup_params(args.region, visit_type, specialization, clinics, doctor))
-
-    eprint("Searching for visits...")
+    eprint("Searching for appointments...")
     attempt = 0
     while True:
         attempt += 1
 
-        start = max(args.after, datetime.datetime.now() + args.margin)
-        end = args.before
+        after = max(args.after, datetime.datetime.now() + args.margin)
+        before = args.before
 
-        if start >= end:
+        if after >= before:
             raise SystemExit("It's already too late")
 
-        visits = itertools.chain.from_iterable(search(start, end, p) for p in params)
+        if not medicover.logged_in:
+            medicover.login()
+
+        visits = medicover.search(args.region, args.specialty, args.doctor, args.clinic, after, before)
 
         if not args.phone:
-            visits = [v for v in visits if not v.phone_consultation]
+            visits = (v for v in visits if not v.phone_consultation)
 
         # we might have found visits outside the interesting time range
-        visits = [v for v in visits if start <= v.date <= end]
+        visits = (v for v in visits if after <= v.date <= before)
 
-        # let's filter out the visits, which don't cover the desired time
+        # filter out the visits, which don't cover the desired time
         if args.time:
-            visits = [v for v in visits if args.time.covers(v.date)]
+            visits = (v for v in visits if args.time.covers(v.date))
 
-        unique_visits = sorted(set(v[:4] for v in visits))
+        visits = list(sorted(visits))
 
-        if unique_visits:
-            eprint(f"Found {len(unique_visits)} visits.")
-            print(tabulate(unique_visits, headers=Visit._fields[:4]))
+        if visits:
+            eprint(f"Found {len(visits)} visits.")
+            print(tabulate([v[:4] for v in visits], headers=Visit._fields[:4]))
 
             if args.autobook:
-                visit = sorted(visits)[0]
-                if autobook(visit, args.reschedule):
-                    eprint("Autobooking successful.")
-                else:
-                    raise SystemExit("Autobooking failed.")
-
-            break
-
+                visit = visits[0]
+                medicover.book(visit)
+                break
         else:
             if not args.keep_going:
                 raise SystemExit("No visits found.")
@@ -549,7 +492,7 @@ def main():
                 else:
                     sleep_time = -1 * args.interval * random.random()
                 eprint(f"No visits found on {attempt} attempt, waiting {sleep_time:.1f} seconds...")
-                time.sleep(sleep_time)
+                medicover.sleep(sleep_time)
 
 
 if __name__ == "__main__":
